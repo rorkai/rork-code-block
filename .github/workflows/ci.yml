@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apple-platforms:
+    name: Apple platforms
+    runs-on: macos-15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Choose an iOS simulator
+        id: simulator
+        run: |
+          simulator_id="$(
+            xcrun simctl list devices available --json |
+              jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid'
+          )"
+          test -n "${simulator_id}" && test "${simulator_id}" != "null"
+          echo "id=${simulator_id}" >> "${GITHUB_OUTPUT}"
+      - name: Validate the package
+        run: make check SIMULATOR_ID=${{ steps.simulator.outputs.id }}
