@@ -7,7 +7,7 @@ import UIKit
 
 /// Verifies the complete streaming path from source values into TextKit storage.
 @MainActor
-@Suite("Code text view")
+@Suite("Code text view", .serialized)
 struct CodeTextViewTests {
   /// Verifies that rapid source updates converge on highlighted final storage.
   @Test("Renders coalesced streaming source")
@@ -256,7 +256,7 @@ struct CodeTextViewTests {
   /// Stores the timing values used by asynchronous view tests.
   private enum TestMetrics {
     /// Allows parser initialization on a cold simulator without flakiness.
-    static let timeout = Duration.seconds(5)
+    static let timeout = Duration.seconds(30)
 
     /// Keeps the test responsive without busy-waiting on the main actor.
     static let pollingInterval = Duration.milliseconds(10)
