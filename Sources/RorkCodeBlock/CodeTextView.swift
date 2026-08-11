@@ -179,8 +179,16 @@ struct CodeTextView: UIViewRepresentable {
     /// Applies snapshots and incremental updates to the TextKit storage.
     private var renderer: TextKitHighlightRenderer?
 
+    /// Caches measured logical lines for incremental horizontal sizing.
+    private var lineWidthCache = CodeLineWidthCache()
+
     /// Avoids retaining the UIKit view beyond its SwiftUI lifetime.
     private weak var textView: SelectableCodeTextView?
+
+    /// Returns whether this coordinator has an active highlighting processor.
+    var isProcessingHighlights: Bool {
+      processingTask != nil
+    }
 
     /// Accepts a new SwiftUI rendition and starts coalesced processing.
     ///
@@ -281,7 +289,9 @@ struct CodeTextView: UIViewRepresentable {
         }
       }
 
-      processingTask = nil
+      if !Task.isCancelled {
+        processingTask = nil
+      }
     }
 
     /// Applies highlighted work when its appearance is still current.
@@ -326,6 +336,7 @@ struct CodeTextView: UIViewRepresentable {
           {
             try renderIncremental(
               update,
+              rendition: rendition,
               renderer: renderer,
               in: textView
             )
@@ -341,7 +352,6 @@ struct CodeTextView: UIViewRepresentable {
 
         appliedRendition = rendition
         appliedSnapshot = result.snapshot
-        refreshGeometry(of: textView, using: rendition)
       } catch {
         applyPlain(rendition, to: textView)
       }
@@ -399,6 +409,7 @@ struct CodeTextView: UIViewRepresentable {
         rendition.attributedSource(snapshot.text)
       )
       try renderer.render(snapshot, in: textView.textStorage)
+      rebuildGeometry(of: textView, using: rendition)
 
       if preservesInteraction {
         textView.selectedRange = previousSelection.clamped(
@@ -415,11 +426,13 @@ struct CodeTextView: UIViewRepresentable {
     ///
     /// - Parameters:
     ///   - update: The highlight update produced after the source edit.
+    ///   - rendition: The appearance applied beneath syntax styles.
     ///   - renderer: The configured TextKit renderer.
     ///   - textView: The destination selectable text view.
     /// - Throws: ``TextKitRenderingError`` when the update cannot be rendered.
     private func renderIncremental(
       _ update: HighlightUpdate,
+      rendition: CodeRendition,
       renderer: TextKitHighlightRenderer,
       in textView: SelectableCodeTextView
     ) throws(TextKitRenderingError) {
@@ -427,6 +440,11 @@ struct CodeTextView: UIViewRepresentable {
       let previousOffset = textView.contentOffset
 
       try renderer.render(update, in: textView.textStorage)
+      refreshGeometry(
+        of: textView,
+        using: rendition,
+        renderingRanges: update.renderingRanges
+      )
       textView.selectedRange = previousSelection.clamped(
         toLength: update.snapshot.text.utf16.count
       )
@@ -480,7 +498,11 @@ struct CodeTextView: UIViewRepresentable {
       textView.textStorage.endEditing()
 
       appliedRendition = rendition
-      refreshGeometry(of: textView, using: rendition)
+      refreshGeometry(
+        of: textView,
+        using: rendition,
+        sourceEdit: edit
+      )
       textView.selectedRange = previousSelection.applying(
         edit,
         resultingLength: rendition.source.utf16.count
@@ -511,7 +533,7 @@ struct CodeTextView: UIViewRepresentable {
       appliedSnapshot = nil
       appliedRendition = rendition
 
-      refreshGeometry(of: textView, using: rendition)
+      rebuildGeometry(of: textView, using: rendition)
 
       if preservesInteraction {
         textView.selectedRange = previousSelection.clamped(
@@ -524,21 +546,94 @@ struct CodeTextView: UIViewRepresentable {
       }
     }
 
-    /// Recomputes horizontal geometry and invalidates SwiftUI's fitting size.
+    /// Rebuilds horizontal geometry after a complete storage replacement.
     ///
     /// - Parameters:
     ///   - textView: The view whose layout should be refreshed.
     ///   - rendition: The appearance used to measure the rendered source.
-    private func refreshGeometry(
+    private func rebuildGeometry(
       of textView: SelectableCodeTextView,
       using rendition: CodeRendition
     ) {
-      textView.widestLineWidth = rendition.widestLineWidth(
-        of: textView.textStorage
+      guard rendition.lineWrapping == .disabled else {
+        lineWidthCache.removeAll()
+        updateGeometry(of: textView, widestLineWidth: 1)
+        return
+      }
+
+      lineWidthCache.rebuild(from: textView.textStorage)
+      updateGeometry(
+        of: textView,
+        widestLineWidth: lineWidthCache.widestLineWidth
       )
+    }
+
+    /// Refreshes horizontal geometry after one source replacement.
+    ///
+    /// - Parameters:
+    ///   - textView: The view whose layout should be refreshed.
+    ///   - rendition: The appearance used to measure the rendered source.
+    ///   - sourceEdit: The replacement already applied to TextKit storage.
+    private func refreshGeometry(
+      of textView: SelectableCodeTextView,
+      using rendition: CodeRendition,
+      sourceEdit: SourceEdit
+    ) {
+      guard rendition.lineWrapping == .disabled else {
+        lineWidthCache.removeAll()
+        updateGeometry(of: textView, widestLineWidth: 1)
+        return
+      }
+
+      lineWidthCache.update(
+        after: sourceEdit,
+        in: textView.textStorage
+      )
+      updateGeometry(
+        of: textView,
+        widestLineWidth: lineWidthCache.widestLineWidth
+      )
+    }
+
+    /// Refreshes horizontal geometry after incremental syntax styling.
+    ///
+    /// - Parameters:
+    ///   - textView: The view whose layout should be refreshed.
+    ///   - rendition: The appearance used to measure the rendered source.
+    ///   - renderingRanges: The ranges whose font traits may have changed.
+    private func refreshGeometry(
+      of textView: SelectableCodeTextView,
+      using rendition: CodeRendition,
+      renderingRanges: [UTF16Range]
+    ) {
+      guard rendition.lineWrapping == .disabled else {
+        lineWidthCache.removeAll()
+        updateGeometry(of: textView, widestLineWidth: 1)
+        return
+      }
+
+      lineWidthCache.remeasure(
+        linesIntersecting: renderingRanges,
+        in: textView.textStorage
+      )
+      updateGeometry(
+        of: textView,
+        widestLineWidth: lineWidthCache.widestLineWidth
+      )
+    }
+
+    /// Invalidates layout after changing the cached horizontal extent.
+    ///
+    /// - Parameters:
+    ///   - textView: The view whose layout should be refreshed.
+    ///   - widestLineWidth: The measured width of the widest logical line.
+    private func updateGeometry(
+      of textView: SelectableCodeTextView,
+      widestLineWidth: CGFloat
+    ) {
+      textView.widestLineWidth = widestLineWidth
       textView.setNeedsLayout()
       textView.invalidateIntrinsicContentSize()
-      textView.layoutIfNeeded()
     }
 
     /// Stores the brief interval used to combine rapid token updates.
@@ -625,32 +720,5 @@ struct CodeRendition: Equatable {
   /// - Returns: Source containing the configured base attributes.
   func attributedSource(_ source: String) -> NSAttributedString {
     NSAttributedString(string: source, attributes: baseAttributes)
-  }
-
-  /// Measures the widest logical source line after syntax styling.
-  ///
-  /// - Parameter attributedSource: The exact attributed source drawn by TextKit.
-  /// - Returns: The width required to keep every source line unwrapped.
-  func widestLineWidth(of attributedSource: NSAttributedString) -> CGFloat {
-    let source = attributedSource.string as NSString
-    var widestWidth = CGFloat.zero
-
-    source.enumerateSubstrings(
-      in: NSRange(location: 0, length: source.length),
-      options: [.byLines, .substringNotRequired]
-    ) { _, range, _, _ in
-      widestWidth = max(
-        widestWidth,
-        attributedSource.attributedSubstring(from: range).size().width
-      )
-    }
-
-    return ceil(widestWidth) + Metrics.fractionalWidthAllowance
-  }
-
-  /// Stores the measurement allowance used by unwrapped source lines.
-  private enum Metrics {
-    /// Prevents the final glyph from wrapping because of fractional rounding.
-    static let fractionalWidthAllowance: CGFloat = 2
   }
 }

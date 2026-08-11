@@ -112,13 +112,42 @@ struct CodeTextViewTests {
     coordinator.cancel()
   }
 
+  /// Verifies that wrapped source avoids unnecessary horizontal measurement.
+  @Test("Skips horizontal measurement for wrapped source")
+  func skipsHorizontalMeasurementForWrappedSource() {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+
+    coordinator.enqueue(
+      rendition(
+        source: "let aVeryLongIdentifier = 42",
+        syntaxHighlighting: .disabled,
+        lineWrapping: .enabled
+      ),
+      in: textView
+    )
+
+    #expect(textView.widestLineWidth == 1)
+    coordinator.cancel()
+  }
+
   /// Verifies that an unavailable grammar leaves complete plain source visible.
   @Test("Falls back to plain source for an unknown language")
   func fallsBackToPlainSourceForUnknownLanguage() async throws {
     let textView = SelectableCodeTextView()
     let coordinator = CodeTextView.Coordinator()
-    let source = "unrecognized source"
-    let rendition = CodeRendition(
+    let source = "let value = 42"
+
+    coordinator.enqueue(rendition(source: source), in: textView)
+
+    try await waitUntil {
+      let colors = foregroundColors(in: textView)
+      return colors.first != nil
+        && colors.last != nil
+        && colors.first != colors.last
+    }
+
+    let unknownLanguageRendition = CodeRendition(
       source: source,
       language: "not-a-language",
       fontSize: 15,
@@ -130,26 +159,53 @@ struct CodeTextViewTests {
       syntaxTheme: .rorkDark
     )
 
-    coordinator.enqueue(rendition, in: textView)
+    coordinator.enqueue(unknownLanguageRendition, in: textView)
     #expect(textView.textStorage.string == source)
 
-    try await Task.sleep(for: TestMetrics.fallbackInterval)
+    textView.textStorage.addAttribute(
+      .foregroundColor,
+      value: UIColor.red,
+      range: NSRange(location: 0, length: 1)
+    )
+    textView.textStorage.addAttribute(
+      .foregroundColor,
+      value: UIColor.blue,
+      range: NSRange(location: source.utf16.count - 1, length: 1)
+    )
 
+    try await waitUntil {
+      let colors = foregroundColors(in: textView)
+      return !coordinator.isProcessingHighlights
+        && colors.first != nil
+        && colors.first == colors.last
+    }
+
+    let colors = foregroundColors(in: textView)
+    #expect(colors.first == colors.last)
+    coordinator.cancel()
+  }
+
+  /// Returns the foreground colors at the beginning and end of a text view.
+  ///
+  /// - Parameter textView: The view whose rendered colors should be inspected.
+  /// - Returns: The optional colors applied to the first and final code units.
+  private func foregroundColors(
+    in textView: SelectableCodeTextView
+  ) -> (first: UIColor?, last: UIColor?) {
     let firstColor =
       textView.textStorage.attribute(
         .foregroundColor,
         at: 0,
         effectiveRange: nil
       ) as? UIColor
-    let finalColor =
+    let lastColor =
       textView.textStorage.attribute(
         .foregroundColor,
-        at: source.utf16.count - 1,
+        at: textView.textStorage.length - 1,
         effectiveRange: nil
       ) as? UIColor
 
-    #expect(firstColor == finalColor)
-    coordinator.cancel()
+    return (first: firstColor, last: lastColor)
   }
 
   /// Creates the stable appearance shared by text view tests.
@@ -157,17 +213,19 @@ struct CodeTextViewTests {
   /// - Parameters:
   ///   - source: The complete source for the test revision.
   ///   - syntaxHighlighting: Whether the revision should receive syntax colors.
+  ///   - lineWrapping: Whether long lines should wrap inside the viewport.
   /// - Returns: A dark Swift rendition suitable for TextKit rendering.
   private func rendition(
     source: String,
-    syntaxHighlighting: CodeSyntaxHighlighting = .automatic
+    syntaxHighlighting: CodeSyntaxHighlighting = .automatic,
+    lineWrapping: CodeLineWrapping = .disabled
   ) -> CodeRendition {
     CodeRendition(
       source: source,
       language: .swift,
       fontSize: 15,
       lineSpacing: 2,
-      lineWrapping: .disabled,
+      lineWrapping: lineWrapping,
       tabWidth: 4,
       textColor: .white,
       syntaxHighlighting: syntaxHighlighting,
@@ -203,7 +261,5 @@ struct CodeTextViewTests {
     /// Keeps the test responsive without busy-waiting on the main actor.
     static let pollingInterval = Duration.milliseconds(10)
 
-    /// Allows the unknown-language fallback to complete after coalescing.
-    static let fallbackInterval = Duration.milliseconds(100)
   }
 }

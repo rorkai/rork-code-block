@@ -33,4 +33,8 @@ jobs:
           test -n "${simulator_id}" && test "${simulator_id}" != "null"
           echo "id=${simulator_id}" >> "${GITHUB_OUTPUT}"
       - name: Validate the package
-        run: make check SIMULATOR_ID=${{ steps.simulator.outputs.id }}
+        env:
+          SIMULATOR_ID: ${{ steps.simulator.outputs.id }}
+        run: make check
+      - name: Build every supported platform
+        run: make build-platforms

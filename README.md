@@ -135,9 +135,14 @@ own selection, scrolling, copying, and highlighting:
 ```swift
 struct PlainCodeBlockStyle: CodeBlockStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.content
-            .background(.quaternary.opacity(0.35))
-            .clipShape(.rect(cornerRadius: 12))
+        VStack(alignment: .trailing, spacing: 0) {
+            configuration.copyButton
+                .padding(8)
+
+            configuration.content
+        }
+        .background(.quaternary.opacity(0.35))
+        .clipShape(.rect(cornerRadius: 12))
     }
 }
 

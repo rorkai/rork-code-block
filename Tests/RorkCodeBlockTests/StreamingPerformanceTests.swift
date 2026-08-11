@@ -1,4 +1,5 @@
 import Dispatch
+import UIKit
 import XCTest
 import os.lock
 
@@ -31,6 +32,58 @@ final class StreamingPerformanceTests: XCTestCase {
 
       usesSecondSource.toggle()
     }
+  }
+
+  /// Measures incremental line sizing after one fixed-width source edit.
+  @MainActor
+  func testIncrementalLineWidthPerformance() throws {
+    let firstSource = Self.source(revision: 0)
+    let secondSource = Self.source(revision: 1)
+    let attributes: [NSAttributedString.Key: Any] = [
+      .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+    ]
+    let attributedSource = NSMutableAttributedString(
+      string: firstSource,
+      attributes: attributes
+    )
+    var cache = CodeLineWidthCache()
+    cache.rebuild(from: attributedSource)
+
+    guard
+      let forwardEdit = SourceEdit.difference(
+        from: firstSource,
+        to: secondSource
+      ),
+      let reverseEdit = SourceEdit.difference(
+        from: secondSource,
+        to: firstSource
+      )
+    else {
+      XCTFail("The benchmark revisions must differ")
+      return
+    }
+
+    var usesSecondSource = true
+
+    measure(metrics: [XCTClockMetric()]) {
+      for _ in 0..<Fixture.lineWidthIterationCount {
+        let edit = usesSecondSource ? forwardEdit : reverseEdit
+        attributedSource.replaceCharacters(
+          in: NSRange(
+            location: edit.range.location,
+            length: edit.range.length
+          ),
+          with: NSAttributedString(
+            string: edit.replacement,
+            attributes: attributes
+          )
+        )
+        cache.update(after: edit, in: attributedSource)
+        usesSecondSource.toggle()
+      }
+    }
+
+    XCTAssertGreaterThan(cache.widestLineWidth, 0)
   }
 
   /// Builds a deterministic Swift document with one changing tail marker.
@@ -88,6 +141,9 @@ final class StreamingPerformanceTests: XCTestCase {
   private enum Fixture {
     /// Keeps the fixture large enough to expose source-diff and parser overhead.
     static let declarationCount = 500
+
+    /// Batches tiny line updates so timer noise does not dominate the result.
+    static let lineWidthIterationCount = 1_000
   }
 
   /// Preserves an asynchronous benchmark failure across the synchronous bridge.

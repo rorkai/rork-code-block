@@ -1,3 +1,4 @@
+import RorkHighlighter
 import Testing
 
 @testable import RorkCodeBlock
@@ -59,7 +60,7 @@ struct StreamingHighlighterTests {
   func reportsUnknownLanguage() async {
     let highlighter = StreamingHighlighter()
 
-    await #expect(throws: (any Error).self) {
+    await #expect(throws: HighlighterError.self) {
       _ = try await highlighter.highlight(
         "plain source",
         as: "not-a-language"

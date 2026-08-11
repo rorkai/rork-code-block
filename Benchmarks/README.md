@@ -1,10 +1,11 @@
 # Benchmarks
 
-The component benchmark measures alternating incremental edits through the
-same `StreamingHighlighter` wrapper used by a visible code block. It creates a
-warm Swift session before measurement, changes a fixed-width marker near the
-end of a representative 500-line source file, and records release-build wall
-clock time with Xcode's performance test support.
+The component benchmark suite measures two alternating incremental edits near
+the end of a representative 500-line Swift source file. The highlighting
+measurement uses the same warm `StreamingHighlighter` wrapper as a visible code
+block. The horizontal sizing measurement uses the same logical-line cache and
+TextKit storage as the rendering path. Both record release-build wall clock
+time with Xcode's performance test support.
 
 The fixed display-frame coalescing interval is intentionally outside the
 measurement. That interval limits work during bursty streams and is not parser
@@ -36,6 +37,7 @@ the release configuration.
 
 | Workload | Mean | Samples |
 | --- | ---: | ---: |
-| Incremental 500-line Swift tail edit | 0.469 ms | 5 |
+| Incremental 500-line Swift tail edit | 0.417 ms | 5 |
+| Incremental 500-line width update | 0.002 ms per edit | 5 batches of 1,000 |
 
 This value is a local reference rather than a cross-machine performance claim.
