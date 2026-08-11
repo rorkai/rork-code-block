@@ -170,6 +170,9 @@ struct CodeTextView: UIViewRepresentable {
     /// Retains the single task that drains pending renditions in order.
     private var processingTask: Task<Void, Never>?
 
+    /// Retains the debounced task that restores exact settled highlighting.
+    private var settlingTask: Task<Void, Never>?
+
     /// Holds the rendition currently represented by the TextKit storage.
     private var appliedRendition: CodeRendition?
 
@@ -187,7 +190,7 @@ struct CodeTextView: UIViewRepresentable {
 
     /// Returns whether this coordinator has an active highlighting processor.
     var isProcessingHighlights: Bool {
-      processingTask != nil
+      processingTask != nil || settlingTask != nil
     }
 
     /// Accepts a new SwiftUI rendition and starts coalesced processing.
@@ -206,6 +209,7 @@ struct CodeTextView: UIViewRepresentable {
         return
       }
 
+      cancelSettledRender()
       latestRendition = rendition
 
       if let appliedRendition,
@@ -229,6 +233,7 @@ struct CodeTextView: UIViewRepresentable {
     func cancel() {
       processingTask?.cancel()
       processingTask = nil
+      cancelSettledRender()
       pendingRendition = nil
       textView = nil
     }
@@ -329,17 +334,26 @@ struct CodeTextView: UIViewRepresentable {
             in: textView
           )
 
-        case .update(let previousSource, _, let update):
+        case .update(let previousSource, let edit, let update):
           if textView.textStorage.string == update.snapshot.text,
             appliedSnapshot?.text == previousSource,
             appliedRendition?.hasSameAppearance(as: rendition) == true
           {
+            let plan = StreamingRenderingPlan(
+              update: update,
+              after: edit,
+              in: previousSource
+            )
             try renderIncremental(
-              update,
+              plan.update,
               rendition: rendition,
               renderer: renderer,
               in: textView
             )
+
+            if plan.requiresSettledRender {
+              scheduleSettledRender()
+            }
           } else {
             try renderComplete(
               update.snapshot,
@@ -352,6 +366,56 @@ struct CodeTextView: UIViewRepresentable {
 
         appliedRendition = rendition
         appliedSnapshot = result.snapshot
+      } catch {
+        applyPlain(rendition, to: textView)
+      }
+    }
+
+    /// Schedules one exact render after an append-only update burst pauses.
+    private func scheduleSettledRender() {
+      settlingTask?.cancel()
+      settlingTask = Task { [weak self] in
+        do {
+          try await Task.sleep(for: Metrics.settlingInterval)
+        } catch {
+          return
+        }
+
+        guard !Task.isCancelled, let self else {
+          return
+        }
+
+        renderSettledSnapshot()
+        settlingTask = nil
+      }
+    }
+
+    /// Cancels a complete render that no longer represents the latest source.
+    private func cancelSettledRender() {
+      settlingTask?.cancel()
+      settlingTask = nil
+    }
+
+    /// Reconciles stable streamed lines with the exact latest parse snapshot.
+    private func renderSettledSnapshot() {
+      guard
+        let textView,
+        let rendition = latestRendition,
+        let snapshot = appliedSnapshot,
+        snapshot.text == rendition.source,
+        textView.textStorage.string == rendition.source,
+        rendition.syntaxHighlighting == .automatic
+      else {
+        return
+      }
+
+      do {
+        try renderComplete(
+          snapshot,
+          rendition: rendition,
+          renderer: preparedRenderer(for: rendition),
+          in: textView
+        )
       } catch {
         applyPlain(rendition, to: textView)
       }
@@ -519,6 +583,7 @@ struct CodeTextView: UIViewRepresentable {
       _ rendition: CodeRendition,
       to textView: SelectableCodeTextView
     ) {
+      cancelSettledRender()
       let previousSource = textView.textStorage.string
       let previousSelection = textView.selectedRange
       let previousOffset = textView.contentOffset
@@ -640,6 +705,9 @@ struct CodeTextView: UIViewRepresentable {
     private enum Metrics {
       /// Limits highlighting work to approximately one update per display frame.
       static let coalescingInterval = Duration.milliseconds(16)
+
+      /// Waits for a streaming burst to pause before restoring exact parse styles.
+      static let settlingInterval = Duration.milliseconds(500)
     }
   }
 }

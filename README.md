@@ -113,7 +113,10 @@ struct StreamingResponse: View {
 
 The plain source update is immediate. Highlighting work is combined over a
 brief display-frame interval, and later revisions reuse the block's existing
-Tree-sitter syntax tree.
+Tree-sitter syntax tree. During append-only bursts, completed lines retain
+their resolved styling while the active line changes. This prevents temporary
+parser error recovery in an unfinished expression from making earlier code
+flicker. The block reconciles the exact complete snapshot after updates pause.
 
 ## Styling
 
@@ -196,9 +199,10 @@ CodeBlock(source, language: .swift)
 
 Rork Code Block keeps its rendering path native. It uses one actor-isolated
 Rork Highlighter session per visible block, coalesces bursts of source updates,
-and applies the resulting UTF-16 rendering ranges through TextKit 2. The
-standard immutable highlighter is initialized once per process and shared by
-all blocks.
+and applies focused UTF-16 rendering ranges through TextKit 2. Append-only
+streams refresh the active suffix without repainting completed lines, then
+receive one exact complete render after the burst settles. The standard
+immutable highlighter is initialized once per process and shared by all blocks.
 
 Run the component's incremental benchmark on an available iOS simulator:
 

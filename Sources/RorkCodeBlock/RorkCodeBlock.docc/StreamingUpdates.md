@@ -42,9 +42,15 @@ highlighting session.
 
 The first highlighted revision opens a Tree-sitter session. Later revisions
 calculate one UTF-16 replacement, incrementally edit the syntax tree, and apply
-only the rendering ranges reported by Rork Highlighter. A language or theme
-change rebuilds the affected presentation without leaking state between
-blocks.
+focused rendering ranges through TextKit. During append-only bursts, the active
+line and new suffix receive current styles while completed lines retain their
+last resolved styles. This prevents temporary error recovery around an
+unfinished token or expression from making earlier declarations flicker. One
+complete render restores the exact latest snapshot after updates pause.
+
+A replacement elsewhere in the source continues to use the complete
+invalidation ranges reported by Rork Highlighter. A language or theme change
+rebuilds the affected presentation without leaking state between blocks.
 
 Unknown languages and highlighting failures leave the complete plain source
 visible. They do not turn a rendering concern into a failed SwiftUI update.

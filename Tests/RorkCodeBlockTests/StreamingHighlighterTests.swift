@@ -1,11 +1,141 @@
 import RorkHighlighter
 import Testing
+import UIKit
 
 @testable @_spi(Benchmarking) import RorkCodeBlock
 
 /// Verifies that one code block reuses ordered Tree-sitter revisions.
 @Suite("Streaming highlighter")
 struct StreamingHighlighterTests {
+  /// Verifies that completed lines stay stable while incomplete Swift streams.
+  @MainActor
+  @Test("Keeps completed Swift lines stable while streaming")
+  func keepsCompletedSwiftLinesStableWhileStreaming() async throws {
+    let streamingHighlighter = StreamingHighlighter()
+    let referenceHighlighter = try Highlighter()
+    let font = UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+    let renderer = TextKitHighlightRenderer(theme: .rorkDark, font: font)
+    let textStorage = NSTextStorage()
+    var stableTypeColor: UIColor?
+    var observedRecoveryReclassification = false
+    var latestSnapshot: HighlightSnapshot?
+
+    for source in streamedRevisions(of: swiftSource, chunkSize: 7) {
+      let result = try await streamingHighlighter.highlight(source, as: .swift)
+      latestSnapshot = result.snapshot
+
+      switch result {
+      case .snapshot(let snapshot):
+        textStorage.setAttributedString(NSAttributedString(string: source))
+        try renderer.render(snapshot, in: textStorage)
+
+      case .update(let previousSource, let edit, let update):
+        textStorage.replaceCharacters(
+          in: NSRange(location: edit.range.location, length: edit.range.length),
+          with: edit.replacement
+        )
+        let plan = StreamingRenderingPlan(
+          update: update,
+          after: edit,
+          in: previousSource
+        )
+        try renderer.render(plan.update, in: textStorage)
+      }
+
+      let referenceSnapshot = try referenceHighlighter.highlight(
+        source,
+        as: .swift
+      )
+      let referenceStorage = NSTextStorage(string: source)
+      let referenceRenderer = TextKitHighlightRenderer(
+        theme: .rorkDark,
+        font: font
+      )
+      try referenceRenderer.render(referenceSnapshot, in: referenceStorage)
+
+      let typeRange = (source as NSString).range(of: "StreamingReply")
+      if typeRange.location != NSNotFound, source.utf16.count >= 70 {
+        let incrementalTypeColor =
+          textStorage.attribute(
+            .foregroundColor,
+            at: typeRange.location,
+            effectiveRange: nil
+          ) as? UIColor
+        let referenceTypeColor =
+          referenceStorage.attribute(
+            .foregroundColor,
+            at: typeRange.location,
+            effectiveRange: nil
+          ) as? UIColor
+
+        if let stableTypeColor {
+          #expect(
+            incrementalTypeColor == stableTypeColor,
+            "A completed type changed color at source length \(source.utf16.count)"
+          )
+        } else {
+          stableTypeColor = incrementalTypeColor
+        }
+
+        if incrementalTypeColor != referenceTypeColor {
+          observedRecoveryReclassification = true
+        }
+      }
+    }
+
+    #expect(observedRecoveryReclassification)
+
+    guard let latestSnapshot else {
+      Issue.record("Expected a final streamed snapshot")
+      return
+    }
+
+    try renderer.render(latestSnapshot, in: textStorage)
+    let referenceSnapshot = try referenceHighlighter.highlight(
+      swiftSource,
+      as: .swift
+    )
+    let referenceStorage = NSTextStorage(string: swiftSource)
+    let referenceRenderer = TextKitHighlightRenderer(
+      theme: .rorkDark,
+      font: font
+    )
+    try referenceRenderer.render(referenceSnapshot, in: referenceStorage)
+
+    #expect(foregroundColors(in: textStorage) == foregroundColors(in: referenceStorage))
+  }
+
+  /// Verifies that nonappend edits retain Tree-sitter's invalidation ranges.
+  @Test("Keeps full invalidation for ordinary edits")
+  func keepsFullInvalidationForOrdinaryEdits() {
+    let source = "let result = value"
+    let snapshot = HighlightSnapshot(
+      text: source,
+      language: .swift,
+      revision: 1,
+      highlights: []
+    )
+    let update = HighlightUpdate(
+      replacedRange: UTF16Range(location: 4, length: 5),
+      replacementRange: UTF16Range(location: 4, length: 6),
+      invalidatedRanges: [UTF16Range(location: 0, length: source.utf16.count)],
+      snapshot: snapshot
+    )
+    let edit = SourceEdit(
+      range: UTF16Range(location: 4, length: 5),
+      replacement: "result"
+    )
+
+    let plan = StreamingRenderingPlan(
+      update: update,
+      after: edit,
+      in: "let value = value"
+    )
+
+    #expect(plan.update == update)
+    #expect(!plan.requiresSettledRender)
+  }
+
   /// Verifies that an appended token advances the existing parse revision.
   @Test("Highlights an incremental append")
   func highlightsIncrementalAppend() async throws {
@@ -66,5 +196,70 @@ struct StreamingHighlighterTests {
         as: "not-a-language"
       )
     }
+  }
+
+  /// Returns the cumulative source revisions produced by fixed-size chunks.
+  ///
+  /// - Parameters:
+  ///   - source: The complete source reconstructed by the revisions.
+  ///   - chunkSize: The maximum number of characters added per revision.
+  /// - Returns: Every cumulative source revision in streaming order.
+  private func streamedRevisions(
+    of source: String,
+    chunkSize: Int
+  ) -> [String] {
+    var revisions: [String] = []
+    var end = source.startIndex
+
+    while end < source.endIndex {
+      end =
+        source.index(
+          end,
+          offsetBy: chunkSize,
+          limitedBy: source.endIndex
+        ) ?? source.endIndex
+      revisions.append(String(source[..<end]))
+    }
+
+    return revisions
+  }
+
+  /// Returns the foreground color at every UTF-16 offset in TextKit storage.
+  ///
+  /// - Parameter textStorage: The storage whose rendered colors are inspected.
+  /// - Returns: Colors ordered by their corresponding UTF-16 offsets.
+  @MainActor
+  private func foregroundColors(
+    in textStorage: NSTextStorage
+  ) -> [UIColor?] {
+    (0..<textStorage.length).map { offset in
+      textStorage.attribute(
+        .foregroundColor,
+        at: offset,
+        effectiveRange: nil
+      ) as? UIColor
+    }
+  }
+
+  /// Holds the complete Swift fixture used by streaming regression tests.
+  private var swiftSource: String {
+    #"""
+    import RorkCodeBlock
+    import SwiftUI
+
+    struct StreamingReply: View {
+        let chunks: AsyncStream<String>
+        @State private var source = ""
+
+        var body: some View {
+            CodeBlock(source, language: .swift)
+                .task {
+                    for await chunk in chunks {
+                        source += chunk
+                    }
+                }
+        }
+    }
+    """#
   }
 }

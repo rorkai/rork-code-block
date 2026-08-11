@@ -78,6 +78,53 @@ struct CodeTextViewTests {
     coordinator.cancel()
   }
 
+  /// Verifies that a paused append stream receives one exact complete render.
+  @Test("Reconciles exact styles after streaming settles")
+  func reconcilesExactStylesAfterStreamingSettles() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let initialSource = #"""
+      import SwiftUI
+
+      struct Greeting: View {
+      """#
+    let finalSource =
+      initialSource + #"""
+
+            var body: some View {
+                Text("Hello")
+            }
+        }
+        """#
+
+    coordinator.enqueue(rendition(source: initialSource), in: textView)
+    try await waitUntil {
+      !coordinator.isProcessingHighlights
+    }
+
+    let finalRendition = rendition(source: finalSource)
+    coordinator.enqueue(finalRendition, in: textView)
+    try await waitUntil {
+      !coordinator.isProcessingHighlights
+    }
+
+    let snapshot = try Highlighter().highlight(finalSource, as: .swift)
+    let referenceStorage = NSTextStorage(
+      attributedString: finalRendition.attributedSource(finalSource)
+    )
+    let referenceRenderer = TextKitHighlightRenderer(
+      theme: finalRendition.syntaxTheme,
+      font: finalRendition.font
+    )
+    try referenceRenderer.render(snapshot, in: referenceStorage)
+
+    #expect(
+      allForegroundColors(in: textView.textStorage)
+        == allForegroundColors(in: referenceStorage)
+    )
+    coordinator.cancel()
+  }
+
   /// Verifies that disabling highlighting presents the latest source immediately.
   @Test("Renders plain source when highlighting is disabled")
   func rendersPlainSourceWhenHighlightingIsDisabled() {
@@ -206,6 +253,22 @@ struct CodeTextViewTests {
       ) as? UIColor
 
     return (first: firstColor, last: lastColor)
+  }
+
+  /// Returns the foreground color at every UTF-16 offset in TextKit storage.
+  ///
+  /// - Parameter textStorage: The storage whose rendered colors are inspected.
+  /// - Returns: Colors ordered by their corresponding UTF-16 offsets.
+  private func allForegroundColors(
+    in textStorage: NSTextStorage
+  ) -> [UIColor?] {
+    (0..<textStorage.length).map { offset in
+      textStorage.attribute(
+        .foregroundColor,
+        at: offset,
+        effectiveRange: nil
+      ) as? UIColor
+    }
   }
 
   /// Creates the stable appearance shared by text view tests.
