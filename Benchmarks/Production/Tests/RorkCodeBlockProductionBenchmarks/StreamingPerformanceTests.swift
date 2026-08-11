@@ -1,9 +1,8 @@
 import Dispatch
+@_spi(Benchmarking) import RorkCodeBlock
 import UIKit
 import XCTest
 import os.lock
-
-@testable import RorkCodeBlock
 
 /// Measures the incremental work owned by the code block package.
 final class StreamingPerformanceTests: XCTestCase {

@@ -7,7 +7,8 @@ import UIKit
 /// Syntax updates similarly remeasure only lines whose font traits may have
 /// changed. Finding the maximum still scans inexpensive cached widths without
 /// laying out every attributed line again.
-struct CodeLineWidthCache {
+@_spi(Benchmarking)
+public struct CodeLineWidthCache {
   /// Holds the measured logical lines in source order.
   private var lines: [MeasuredLine] = []
 
@@ -15,13 +16,16 @@ struct CodeLineWidthCache {
   private var utf16Length = 0
 
   /// Returns the horizontal extent required by the widest logical line.
-  var widestLineWidth: CGFloat {
+  public var widestLineWidth: CGFloat {
     let widestWidth = lines.lazy.map(\.width).max() ?? 0
     return ceil(widestWidth) + Metrics.fractionalWidthAllowance
   }
 
+  /// Creates an empty logical-line measurement cache.
+  public init() {}
+
   /// Discards measurements when wrapping makes horizontal sizing unnecessary.
-  mutating func removeAll() {
+  public mutating func removeAll() {
     lines.removeAll(keepingCapacity: true)
     utf16Length = 0
   }
@@ -29,7 +33,7 @@ struct CodeLineWidthCache {
   /// Measures every logical line after a complete storage replacement.
   ///
   /// - Parameter attributedSource: The exact attributed source drawn by TextKit.
-  mutating func rebuild(from attributedSource: NSAttributedString) {
+  public mutating func rebuild(from attributedSource: NSAttributedString) {
     utf16Length = attributedSource.length
     lines = Self.measuredLines(
       in: attributedSource,
@@ -47,7 +51,7 @@ struct CodeLineWidthCache {
   /// - Parameters:
   ///   - edit: The source replacement already applied to TextKit storage.
   ///   - attributedSource: The resulting attributed source.
-  mutating func update(
+  public mutating func update(
     after edit: SourceEdit,
     in attributedSource: NSAttributedString
   ) {
@@ -91,7 +95,7 @@ struct CodeLineWidthCache {
   /// - Parameters:
   ///   - renderingRanges: The ranges whose syntax attributes may have changed.
   ///   - attributedSource: The resulting attributed source.
-  mutating func remeasure(
+  public mutating func remeasure(
     linesIntersecting renderingRanges: [UTF16Range],
     in attributedSource: NSAttributedString
   ) {

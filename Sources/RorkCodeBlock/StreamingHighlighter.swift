@@ -1,7 +1,8 @@
 import RorkHighlighter
 
 /// Represents the highlighting work produced for one source revision.
-enum StreamingHighlightResult: Sendable {
+@_spi(Benchmarking)
+public enum StreamingHighlightResult: Sendable {
   /// Supplies a complete snapshot after opening or rebuilding a session.
   case snapshot(HighlightSnapshot)
 
@@ -13,7 +14,7 @@ enum StreamingHighlightResult: Sendable {
   )
 
   /// Returns the complete snapshot carried by either result kind.
-  var snapshot: HighlightSnapshot {
+  public var snapshot: HighlightSnapshot {
     switch self {
     case .snapshot(let snapshot):
       snapshot
@@ -24,7 +25,8 @@ enum StreamingHighlightResult: Sendable {
 }
 
 /// Reuses one Tree-sitter session across changing revisions of a code block.
-actor StreamingHighlighter {
+@_spi(Benchmarking)
+public actor StreamingHighlighter {
   /// Holds the mutable highlighting session for the current language.
   private var session: HighlightSession?
 
@@ -33,6 +35,9 @@ actor StreamingHighlighter {
 
   /// Holds the language represented by ``session``.
   private var language: CodeLanguage?
+
+  /// Creates an empty incremental highlighting session wrapper.
+  public init() {}
 
   /// Produces a complete snapshot or one incremental update for new source.
   ///
@@ -44,7 +49,7 @@ actor StreamingHighlighter {
   ///   - newLanguage: The language used to parse the source.
   /// - Returns: The work required to render the requested revision.
   /// - Throws: ``HighlighterError`` when the language or source cannot be parsed.
-  func highlight(
+  public func highlight(
     _ newSource: String,
     as newLanguage: CodeLanguage
   ) async throws(HighlighterError) -> StreamingHighlightResult {

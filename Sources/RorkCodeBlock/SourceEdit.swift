@@ -2,15 +2,16 @@ import Foundation
 import RorkHighlighter
 
 /// Describes one contiguous replacement between two source revisions.
-struct SourceEdit: Equatable, Sendable {
+@_spi(Benchmarking)
+public struct SourceEdit: Equatable, Sendable {
   /// Holds the UTF-16 range removed from the previous source.
-  let range: UTF16Range
+  public let range: UTF16Range
 
   /// Holds the source inserted at ``range``.
-  let replacement: String
+  public let replacement: String
 
   /// Returns the UTF-16 range occupied by the replacement.
-  var replacementRange: UTF16Range {
+  public var replacementRange: UTF16Range {
     UTF16Range(
       location: range.location,
       length: replacement.utf16.count
@@ -27,7 +28,7 @@ struct SourceEdit: Equatable, Sendable {
   ///   - oldSource: The source represented by the current revision.
   ///   - newSource: The complete source requested by the next revision.
   /// - Returns: The required replacement, or `nil` when the strings match.
-  static func difference(
+  public static func difference(
     from oldSource: String,
     to newSource: String
   ) -> Self? {

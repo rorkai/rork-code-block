@@ -2,7 +2,7 @@ import RorkHighlighter
 import Testing
 import UIKit
 
-@testable import RorkCodeBlock
+@_spi(Benchmarking) @testable import RorkCodeBlock
 
 /// Verifies incremental measurement of logical source lines.
 @Suite("Code line width cache")

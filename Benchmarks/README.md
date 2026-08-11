@@ -7,6 +7,11 @@ block. The horizontal sizing measurement uses the same logical-line cache and
 TextKit storage as the rendering path. Both record release-build wall clock
 time with Xcode's performance test support.
 
+The suite lives in an isolated Swift package so the parent `RorkCodeBlock`
+module can be compiled with `ENABLE_TESTABILITY=NO`. Benchmark-only access uses
+Swift's SPI boundary and does not make rendering internals part of the public
+library API.
+
 The fixed display-frame coalescing interval is intentionally outside the
 measurement. That interval limits work during bursty streams and is not parser
 or rendering time.
@@ -31,13 +36,13 @@ this repository does not duplicate those measurements.
 
 ## Reference result
 
-The initial release benchmark produced the following warm result on an Apple
-M5 Max with Xcode 26.6 and Swift 6.3.3. It used an iPhone 17 Pro simulator and
-the release configuration.
+The production-configured benchmark produced the following warm result on an
+Apple M5 Max with Xcode 26.6 and Swift 6.3.3. It used an iPhone 17 Pro simulator
+and the release configuration.
 
 | Workload | Mean | Samples |
 | --- | ---: | ---: |
-| Incremental 500-line Swift tail edit | 0.417 ms | 5 |
+| Incremental 500-line Swift tail edit | 0.451 ms | 5 |
 | Incremental 500-line width update | 0.002 ms per edit | 5 batches of 1,000 |
 
 This value is a local reference rather than a cross-machine performance claim.
