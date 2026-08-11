@@ -8,6 +8,9 @@ EXAMPLE_WORKSPACE := $(EXAMPLE_DIRECTORY)/RorkCodeBlockExample.xcworkspace
 EXAMPLE_SCHEME := RorkCodeBlockExample
 SIMULATOR_ID ?=
 
+# Xcode build recipes share Derived Data and must not run concurrently.
+.NOTPARALLEL:
+
 .PHONY: build build-device build-catalyst build-visionos build-platforms build-example build-example-catalyst build-example-visionos build-example-platforms generate-example test benchmark documentation format lint require-simulator check
 
 build:
