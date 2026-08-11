@@ -1,7 +1,7 @@
 import RorkHighlighter
 import Testing
 
-@_spi(Benchmarking) @testable import RorkCodeBlock
+@testable @_spi(Benchmarking) import RorkCodeBlock
 
 /// Verifies that one code block reuses ordered Tree-sitter revisions.
 @Suite("Streaming highlighter")

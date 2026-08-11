@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@_spi(Benchmarking) @testable import RorkCodeBlock
+@testable @_spi(Benchmarking) import RorkCodeBlock
 
 /// Verifies the UTF-16 edit calculation used by streaming updates.
 @Suite("Source edits")
