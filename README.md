@@ -35,6 +35,13 @@ styles through Rork Highlighter. It grows vertically with its content and
 scrolls long lines horizontally, which makes it comfortable inside an existing
 `ScrollView`.
 
+## Example app
+
+The runnable [example app](Examples/RorkCodeBlockExample) demonstrates static
+and rapidly streaming source, language switching, and every bundled card style.
+It uses this checkout as a local package dependency and runs on iOS, Mac
+Catalyst, and visionOS.
+
 ## What it is designed for
 
 - Streamed AI responses whose source changes several times per second.

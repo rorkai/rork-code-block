@@ -14,7 +14,15 @@ make check SIMULATOR_ID=<simulator-udid>
 ```
 
 The check command lints Swift sources, builds the package, generates its
-documentation, and runs the simulator test suite.
+documentation, runs the simulator test suite, and builds the example app.
+
+The example project is generated with the Tuist version pinned in `mise.toml`.
+`Project.swift` is its source of truth, and generated Xcode files remain
+ignored.
+
+```bash
+make generate-example
+```
 
 New public and internal declarations need complete documentation. Comments
 should explain intent or a non-obvious constraint in short natural prose.
