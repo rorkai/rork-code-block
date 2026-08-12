@@ -9,6 +9,20 @@ import UIKit
 @MainActor
 @Suite("Code text view", .serialized)
 struct CodeTextViewTests {
+  /// Verifies that iOS 26 cannot derive extra scroll padding from card corners.
+  @Test("Keeps scroll padding independent of card corners")
+  func keepsScrollPaddingIndependentOfCardCorners() {
+    guard #available(iOS 26.0, visionOS 26.0, *) else {
+      return
+    }
+
+    let textView = SelectableCodeTextView()
+
+    #expect(
+      textView.cornerConfiguration == .uniformCorners(radius: 0)
+    )
+  }
+
   /// Verifies that rapid source updates converge on highlighted final storage.
   @Test("Renders coalesced streaming source")
   func rendersCoalescedStreamingSource() async throws {
