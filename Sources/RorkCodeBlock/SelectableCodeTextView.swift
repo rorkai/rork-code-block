@@ -60,10 +60,13 @@ final class SelectableCodeTextView: UITextView {
 
     // iOS 26 derives scroll padding from this view's corner geometry. The
     // SwiftUI card owns the visible rounding, so square UIKit geometry keeps
-    // the indicator inset stable wherever the block appears.
-    if #available(iOS 26.0, visionOS 26.0, *) {
-      cornerConfiguration = .uniformCorners(radius: 0)
-    }
+    // the indicator inset stable wherever the block appears. The compiler
+    // guard preserves Xcode 16 compatibility because its SDK lacks this API.
+    #if compiler(>=6.2)
+      if #available(iOS 26.0, visionOS 26.0, *) {
+        cornerConfiguration = .uniformCorners(radius: 0)
+      }
+    #endif
 
     codeTextContainer.lineFragmentPadding = 0
 
