@@ -176,8 +176,11 @@ struct CodeTextView: UIViewRepresentable {
     /// Holds the rendition currently represented by the TextKit storage.
     private var appliedRendition: CodeRendition?
 
-    /// Holds the parsed revision whose styles remain in the TextKit storage.
-    private var appliedSnapshot: HighlightSnapshot?
+    /// Holds the stabilized syntax state represented by the TextKit storage.
+    private var renderingState: StreamingRenderingState?
+
+    /// Holds the exact latest parse before streaming stabilization is applied.
+    private var latestParsedSnapshot: HighlightSnapshot?
 
     /// Applies snapshots and incremental updates to the TextKit storage.
     private var renderer: TextKitHighlightRenderer?
@@ -324,6 +327,7 @@ struct CodeTextView: UIViewRepresentable {
 
       do {
         let renderer = preparedRenderer(for: rendition)
+        let nextRenderingState: StreamingRenderingState
 
         switch result {
         case .snapshot(let snapshot):
@@ -333,16 +337,18 @@ struct CodeTextView: UIViewRepresentable {
             renderer: renderer,
             in: textView
           )
+          nextRenderingState = StreamingRenderingState(snapshot: snapshot)
 
         case .update(let previousSource, let edit, let update):
           if textView.textStorage.string == update.snapshot.text,
-            appliedSnapshot?.text == previousSource,
+            let renderingState,
+            renderingState.snapshot.text == previousSource,
             appliedRendition?.hasSameAppearance(as: rendition) == true
           {
             let plan = StreamingRenderingPlan(
               update: update,
               after: edit,
-              in: previousSource
+              from: renderingState
             )
             try renderIncremental(
               plan.update,
@@ -354,6 +360,7 @@ struct CodeTextView: UIViewRepresentable {
             if plan.requiresSettledRender {
               scheduleSettledRender()
             }
+            nextRenderingState = plan.state
           } else {
             try renderComplete(
               update.snapshot,
@@ -361,11 +368,15 @@ struct CodeTextView: UIViewRepresentable {
               renderer: renderer,
               in: textView
             )
+            nextRenderingState = StreamingRenderingState(
+              snapshot: update.snapshot
+            )
           }
         }
 
         appliedRendition = rendition
-        appliedSnapshot = result.snapshot
+        renderingState = nextRenderingState
+        latestParsedSnapshot = result.snapshot
       } catch {
         applyPlain(rendition, to: textView)
       }
@@ -401,7 +412,7 @@ struct CodeTextView: UIViewRepresentable {
       guard
         let textView,
         let rendition = latestRendition,
-        let snapshot = appliedSnapshot,
+        let snapshot = latestParsedSnapshot,
         snapshot.text == rendition.source,
         textView.textStorage.string == rendition.source,
         rendition.syntaxHighlighting == .automatic
@@ -416,6 +427,7 @@ struct CodeTextView: UIViewRepresentable {
           renderer: preparedRenderer(for: rendition),
           in: textView
         )
+        renderingState = StreamingRenderingState(snapshot: snapshot)
       } catch {
         applyPlain(rendition, to: textView)
       }
@@ -595,7 +607,8 @@ struct CodeTextView: UIViewRepresentable {
         rendition.attributedSource(rendition.source)
       )
       renderer = nil
-      appliedSnapshot = nil
+      renderingState = nil
+      latestParsedSnapshot = nil
       appliedRendition = rendition
 
       rebuildGeometry(of: textView, using: rendition)

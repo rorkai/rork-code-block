@@ -42,11 +42,13 @@ highlighting session.
 
 The first highlighted revision opens a Tree-sitter session. Later revisions
 calculate one UTF-16 replacement, incrementally edit the syntax tree, and apply
-focused rendering ranges through TextKit. During append-only bursts, the active
-line and new suffix receive current styles while completed lines retain their
-last resolved styles. This prevents temporary error recovery around an
-unfinished token or expression from making earlier declarations flicker. One
-complete render restores the exact latest snapshot after updates pause.
+focused rendering ranges through TextKit. During append-only bursts, captures
+established when a line completes remain stable while previously unresolved
+syntax can accept newly recognized captures. The active line always follows
+the current syntax tree. This prevents temporary error recovery around an
+unfinished token or expression from making earlier declarations flicker or
+delaying newly resolved colors. One complete render restores the exact latest
+snapshot after updates pause.
 
 A replacement elsewhere in the source continues to use the complete
 invalidation ranges reported by Rork Highlighter. A language or theme change

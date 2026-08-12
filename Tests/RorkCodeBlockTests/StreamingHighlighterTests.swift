@@ -19,6 +19,7 @@ struct StreamingHighlighterTests {
     var stableTypeColor: UIColor?
     var observedRecoveryReclassification = false
     var latestSnapshot: HighlightSnapshot?
+    var renderingState: StreamingRenderingState?
 
     for source in streamedRevisions(of: swiftSource, chunkSize: 7) {
       let result = try await streamingHighlighter.highlight(source, as: .swift)
@@ -28,18 +29,22 @@ struct StreamingHighlighterTests {
       case .snapshot(let snapshot):
         textStorage.setAttributedString(NSAttributedString(string: source))
         try renderer.render(snapshot, in: textStorage)
+        renderingState = StreamingRenderingState(snapshot: snapshot)
 
       case .update(let previousSource, let edit, let update):
         textStorage.replaceCharacters(
           in: NSRange(location: edit.range.location, length: edit.range.length),
           with: edit.replacement
         )
+        let previousState = try #require(renderingState)
+        #expect(previousState.snapshot.text == previousSource)
         let plan = StreamingRenderingPlan(
           update: update,
           after: edit,
-          in: previousSource
+          from: previousState
         )
         try renderer.render(plan.update, in: textStorage)
+        renderingState = plan.state
       }
 
       let referenceSnapshot = try referenceHighlighter.highlight(
@@ -90,7 +95,6 @@ struct StreamingHighlighterTests {
       return
     }
 
-    try renderer.render(latestSnapshot, in: textStorage)
     let referenceSnapshot = try referenceHighlighter.highlight(
       swiftSource,
       as: .swift
@@ -102,7 +106,20 @@ struct StreamingHighlighterTests {
     )
     try referenceRenderer.render(referenceSnapshot, in: referenceStorage)
 
-    #expect(foregroundColors(in: textStorage) == foregroundColors(in: referenceStorage))
+    let streamingColors = foregroundColors(in: textStorage)
+    let referenceColors = foregroundColors(in: referenceStorage)
+    let recoloredOffsets = zip(streamingColors, referenceColors).enumerated()
+      .compactMap { offset, colors in
+        colors.0 == colors.1 ? nil : offset
+      }
+
+    #expect(
+      recoloredOffsets.isEmpty,
+      "A settled render would recolor UTF-16 offsets \(recoloredOffsets)"
+    )
+
+    try renderer.render(latestSnapshot, in: textStorage)
+    #expect(foregroundColors(in: textStorage) == referenceColors)
   }
 
   /// Verifies that nonappend edits retain Tree-sitter's invalidation ranges.
@@ -129,7 +146,14 @@ struct StreamingHighlighterTests {
     let plan = StreamingRenderingPlan(
       update: update,
       after: edit,
-      in: "let value = value"
+      from: StreamingRenderingState(
+        snapshot: HighlightSnapshot(
+          text: "let value = value",
+          language: .swift,
+          revision: 0,
+          highlights: []
+        )
+      )
     )
 
     #expect(plan.update == update)
