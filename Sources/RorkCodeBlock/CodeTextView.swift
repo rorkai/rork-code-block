@@ -223,7 +223,7 @@ struct CodeTextView: UIViewRepresentable {
         applyPlain(rendition, to: textView)
       }
 
-      guard rendition.syntaxHighlighting == .automatic else {
+      guard rendition.syntaxHighlighting.highlightsCurrentSource else {
         pendingRendition = nil
         return
       }
@@ -320,7 +320,7 @@ struct CodeTextView: UIViewRepresentable {
         let latestRendition,
         latestRendition.source == result.snapshot.text,
         latestRendition.hasSameAppearance(as: rendition),
-        latestRendition.syntaxHighlighting == .automatic
+        latestRendition.syntaxHighlighting.highlightsCurrentSource
       else {
         return
       }
@@ -415,7 +415,7 @@ struct CodeTextView: UIViewRepresentable {
         let snapshot = latestParsedSnapshot,
         snapshot.text == rendition.source,
         textView.textStorage.string == rendition.source,
-        rendition.syntaxHighlighting == .automatic
+        rendition.syntaxHighlighting.highlightsCurrentSource
       else {
         return
       }
@@ -748,7 +748,7 @@ struct CodeRendition: Equatable {
   /// Holds the color used by unhighlighted source.
   let textColor: Color
 
-  /// Holds whether syntax captures should be colored.
+  /// Holds when syntax captures should be colored.
   let syntaxHighlighting: CodeSyntaxHighlighting
 
   /// Holds the theme used to resolve syntax captures.

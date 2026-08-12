@@ -120,6 +120,16 @@ prevents temporary parser error recovery in an unfinished expression from
 making earlier code flicker. The block reconciles the exact complete snapshot
 after updates pause without delaying newly resolved colors.
 
+If stable plain text is preferable while chunks arrive, pass the producer's
+streaming state and highlight once it finishes:
+
+```swift
+CodeBlock(source, language: .typescript)
+    .codeSyntaxHighlighting(.deferred(whileStreaming: isStreaming))
+```
+
+This explicit state avoids guessing whether a slow stream has ended.
+
 ## Styling
 
 The adaptive default card follows the surrounding color scheme. Common visual

@@ -45,7 +45,7 @@ public struct CodeBlock: View {
   /// Reads the color used by unhighlighted source.
   @Environment(\.codeTextColor) private var textColor
 
-  /// Reads whether syntax captures should be colored.
+  /// Reads when syntax captures should be colored.
   @Environment(\.codeSyntaxHighlighting) private var syntaxHighlighting
 
   /// Reads an explicit syntax theme when one was supplied.

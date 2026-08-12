@@ -175,6 +175,46 @@ struct CodeTextViewTests {
     coordinator.cancel()
   }
 
+  /// Verifies that deferred highlighting waits for the stream to finish.
+  @Test("Highlights deferred source after streaming finishes")
+  func highlightsDeferredSourceAfterStreamingFinishes() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let revisions = ["let", "let value", "let value = 42"]
+
+    for revision in revisions {
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          syntaxHighlighting: .deferred(whileStreaming: true)
+        ),
+        in: textView
+      )
+    }
+
+    let streamingColors = foregroundColors(in: textView)
+    #expect(textView.textStorage.string == revisions.last)
+    #expect(streamingColors.first == streamingColors.last)
+    #expect(!coordinator.isProcessingHighlights)
+
+    coordinator.enqueue(
+      rendition(
+        source: revisions.last ?? "",
+        syntaxHighlighting: .deferred(whileStreaming: false)
+      ),
+      in: textView
+    )
+
+    try await waitUntil {
+      let colors = foregroundColors(in: textView)
+      return colors.first != nil
+        && colors.last != nil
+        && colors.first != colors.last
+    }
+
+    coordinator.cancel()
+  }
+
   /// Verifies that wrapped source avoids unnecessary horizontal measurement.
   @Test("Skips horizontal measurement for wrapped source")
   func skipsHorizontalMeasurementForWrappedSource() {

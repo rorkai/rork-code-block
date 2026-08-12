@@ -20,7 +20,7 @@ extension EnvironmentValues {
   /// Stores the color used when syntax highlighting is disabled or unavailable.
   @Entry var codeTextColor = CodeBlockPalette.text
 
-  /// Stores whether syntax captures should be colored.
+  /// Stores when syntax captures should be colored.
   @Entry var codeSyntaxHighlighting = CodeSyntaxHighlighting.automatic
 
   /// Stores an explicit syntax theme or `nil` to follow the card appearance.
@@ -110,7 +110,7 @@ extension View {
     environment(\.codeTextColor, color)
   }
 
-  /// Sets whether code blocks color syntax captures.
+  /// Sets when code blocks color syntax captures.
   ///
   /// - Parameter highlighting: The requested highlighting behavior.
   /// - Returns: A view that supplies the behavior to descendant code blocks.

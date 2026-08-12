@@ -1,13 +1,24 @@
 import UIKit
 
-/// Controls whether a code block colors syntax captures.
+/// Controls when a code block colors syntax captures.
 public enum CodeSyntaxHighlighting: Hashable, Sendable {
-  /// Highlights recognized languages and falls back to unstyled source when
+  /// Highlights each source revision and falls back to unstyled source when
   /// the requested language is unavailable.
   case automatic
 
+  /// Presents plain source while streaming and highlights it when streaming
+  /// finishes.
+  ///
+  /// - Parameter whileStreaming: Whether the source is still receiving updates.
+  case deferred(whileStreaming: Bool)
+
   /// Draws the complete source with the configured text color.
   case disabled
+
+  /// Returns whether the current source revision should be highlighted.
+  var highlightsCurrentSource: Bool {
+    self == .automatic || self == .deferred(whileStreaming: false)
+  }
 }
 
 /// Controls how lines wider than a code block are presented.

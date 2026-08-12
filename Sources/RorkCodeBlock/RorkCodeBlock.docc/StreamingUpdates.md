@@ -29,9 +29,24 @@ struct StreamingResponse: View {
 }
 ```
 
-There is no separate streaming mode. This keeps the source of truth in the
-parent view and makes the component work with any producer, including an async
-sequence, an observation model, or a reducer.
+There is no separate streaming view or controller. This keeps the source of
+truth in the parent view and makes the component work with any producer,
+including an async sequence, an observation model, or a reducer.
+
+## Choose when highlighting runs
+
+Incremental highlighting is enabled by default. Apps that prefer stable plain
+text during generation can supply their existing streaming state:
+
+```swift
+CodeBlock(source, language: .swift)
+    .codeSyntaxHighlighting(.deferred(whileStreaming: isStreaming))
+```
+
+The source remains selectable and updates immediately while `isStreaming` is
+`true`. Changing it to `false` highlights the complete current source. The
+explicit state works for streams with arbitrary pauses because the component
+does not need to infer when generation has ended.
 
 ## Understand the update path
 
