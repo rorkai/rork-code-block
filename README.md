@@ -30,10 +30,9 @@ struct ExampleView: View {
 }
 ```
 
-The block shows source immediately, then applies accurate Tree-sitter syntax
-styles through Rork Highlighter. It grows vertically with its content and
-scrolls long lines horizontally, which makes it comfortable inside an existing
-`ScrollView`.
+The block renders accurate Tree-sitter syntax styles through Rork Highlighter.
+It grows vertically with its content and scrolls long lines horizontally, which
+makes it comfortable inside an existing `ScrollView`.
 
 ## Example app
 
@@ -111,15 +110,12 @@ struct StreamingResponse: View {
 }
 ```
 
-The plain source update is immediate. Highlighting work is combined over a
-brief display-frame interval, and later revisions reuse the block's existing
-Tree-sitter syntax tree. During append-only bursts, completed lines retain
-their established captures through temporary error recovery. If Tree-sitter
-explicitly invalidates a completed token and supplies a replacement capture for
-the same range, the replacement supersedes the stale capture. Previously
-unresolved syntax can still gain color, and the active line follows the latest
-parse. The block reconciles the exact complete snapshot after updates pause
-without changing colors that were already correct in the final streamed frame.
+Highlighting work is combined over a brief display-frame interval, and later
+revisions reuse the block's existing Tree-sitter syntax tree. In automatic
+mode, each visible source revision and its exact syntax styles are committed to
+TextKit together. This prevents an unhighlighted source frame from appearing
+while the matching parser result is still in flight. The visible source can
+therefore trail the producer by one coalescing interval during a rapid stream.
 
 If stable plain text is preferable while chunks arrive, pass the producer's
 streaming state and highlight once it finishes:
@@ -212,11 +208,9 @@ CodeBlock(source, language: .swift)
 
 Rork Code Block keeps its rendering path native. It uses one actor-isolated
 Rork Highlighter session per visible block, coalesces bursts of source updates,
-and applies focused UTF-16 rendering ranges through TextKit 2. Append-only
-streams preserve captures established when lines complete while incorporating
-new captures from each parse, then receive one exact complete render after the
-burst settles. The standard immutable highlighter is initialized once per
-process and shared by all blocks.
+and commits source edits with focused UTF-16 rendering ranges through TextKit 2.
+The standard immutable highlighter is initialized once per process and shared
+by all blocks.
 
 Run the component's incremental benchmark on an available iOS simulator:
 

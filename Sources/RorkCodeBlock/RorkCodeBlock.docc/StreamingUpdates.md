@@ -50,21 +50,17 @@ does not need to infer when generation has ended.
 
 ## Understand the update path
 
-The TextKit view receives plain source synchronously so rendering never waits
-for parser initialization. The block combines rapid revisions over a short
-display-frame interval, then submits the newest source to its actor-isolated
-highlighting session.
+The block combines rapid revisions over a short display-frame interval, then
+submits the newest source to its actor-isolated highlighting session. In
+automatic mode, the TextKit view advances only when that source revision and
+its parser snapshot can be committed together. This can leave the visible text
+one coalescing interval behind the producer during a rapid burst.
 
 The first highlighted revision opens a Tree-sitter session. Later revisions
 calculate one UTF-16 replacement, incrementally edit the syntax tree, and apply
-focused rendering ranges through TextKit. During append-only bursts, captures
-established when a line completes survive temporary error recovery. When
-Tree-sitter explicitly invalidates a completed token and supplies a replacement
-capture for the same range, the replacement removes the stale capture.
-Previously unresolved syntax can still accept newly recognized captures, and
-the active line always follows the current syntax tree. One complete render
-restores the exact latest snapshot after updates pause without recoloring an
-already correct final streamed frame.
+the same replacement and focused rendering ranges to TextKit in one editing
+transaction. A parser result superseded by a newer source revision still
+advances the Tree-sitter session but never becomes visible on its own.
 
 A replacement elsewhere in the source continues to use the complete
 invalidation ranges reported by Rork Highlighter. A language or theme change

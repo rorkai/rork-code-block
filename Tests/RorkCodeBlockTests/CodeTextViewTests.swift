@@ -43,9 +43,13 @@ struct CodeTextViewTests {
       coordinator.enqueue(rendition(source: revision), in: textView)
     }
 
-    #expect(textView.textStorage.string == revisions.last)
+    #expect(textView.textStorage.string != revisions.last)
 
     try await waitUntil {
+      guard textView.textStorage.length > 4 else {
+        return false
+      }
+
       let keywordColor =
         textView.textStorage.attribute(
           .foregroundColor,
@@ -94,51 +98,50 @@ struct CodeTextViewTests {
     coordinator.cancel()
   }
 
-  /// Verifies that the example cadence reaches exact colors before settling.
-  @Test("Keeps final example colors stable through settling")
-  func keepsFinalExampleColorsStableThroughSettling() async throws {
+  /// Verifies that source never advances ahead of its syntax snapshot.
+  @Test("Commits streaming source with matching highlights")
+  func commitsStreamingSourceWithMatchingHighlights() async throws {
     let textView = SelectableCodeTextView()
     let coordinator = CodeTextView.Coordinator()
+    let referenceHighlighter = try Highlighter()
+    var previouslyRenderedSource = ""
 
     for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
       coordinator.enqueue(rendition(source: revision), in: textView)
+
+      let visibleSource = textView.textStorage.string
+      #expect(
+        visibleSource == previouslyRenderedSource,
+        "Revision \(revision.utf16.count) appeared before highlighting"
+      )
+
       try await Task.sleep(for: TestMetrics.streamingInterval)
+      previouslyRenderedSource = textView.textStorage.string
+
+      if !previouslyRenderedSource.isEmpty {
+        try expectExactHighlighting(
+          in: textView,
+          for: previouslyRenderedSource,
+          using: referenceHighlighter
+        )
+      }
     }
 
-    try await waitUntil {
-      coordinator.hasRenderedLatestSource
-    }
-    let colorsBeforeSettling = allForegroundColors(in: textView.textStorage)
-
-    try await waitUntil {
-      !coordinator.isProcessingHighlights
-    }
-
-    let snapshot = try Highlighter().highlight(swiftSource, as: .swift)
-    let finalRendition = rendition(source: swiftSource)
-    let referenceStorage = NSTextStorage(
-      attributedString: finalRendition.attributedSource(swiftSource)
-    )
-    let referenceRenderer = TextKitHighlightRenderer(
-      theme: finalRendition.syntaxTheme,
-      font: finalRendition.font
-    )
-    try referenceRenderer.render(snapshot, in: referenceStorage)
-
-    #expect(
-      colorsBeforeSettling == allForegroundColors(in: referenceStorage)
-    )
-    #expect(
-      allForegroundColors(in: textView.textStorage) == colorsBeforeSettling
+    try await waitUntil { coordinator.hasRenderedLatestSource }
+    try expectExactHighlighting(
+      in: textView,
+      for: swiftSource,
+      using: referenceHighlighter
     )
     coordinator.cancel()
   }
 
-  /// Verifies that a paused append stream receives one exact complete render.
-  @Test("Reconciles exact styles after streaming settles")
-  func reconcilesExactStylesAfterStreamingSettles() async throws {
+  /// Verifies that parser results remain exact after a coalesced append.
+  @Test("Renders exact styles after a coalesced append")
+  func rendersExactStylesAfterACoalescedAppend() async throws {
     let textView = SelectableCodeTextView()
     let coordinator = CodeTextView.Coordinator()
+    let referenceHighlighter = try Highlighter()
     let initialSource = #"""
       import SwiftUI
 
@@ -164,19 +167,10 @@ struct CodeTextViewTests {
       !coordinator.isProcessingHighlights
     }
 
-    let snapshot = try Highlighter().highlight(finalSource, as: .swift)
-    let referenceStorage = NSTextStorage(
-      attributedString: finalRendition.attributedSource(finalSource)
-    )
-    let referenceRenderer = TextKitHighlightRenderer(
-      theme: finalRendition.syntaxTheme,
-      font: finalRendition.font
-    )
-    try referenceRenderer.render(snapshot, in: referenceStorage)
-
-    #expect(
-      allForegroundColors(in: textView.textStorage)
-        == allForegroundColors(in: referenceStorage)
+    try expectExactHighlighting(
+      in: textView,
+      for: finalSource,
+      using: referenceHighlighter
     )
     coordinator.cancel()
   }
@@ -335,6 +329,10 @@ struct CodeTextViewTests {
   private func foregroundColors(
     in textView: SelectableCodeTextView
   ) -> (first: UIColor?, last: UIColor?) {
+    guard textView.textStorage.length > 0 else {
+      return (first: nil, last: nil)
+    }
+
     let firstColor =
       textView.textStorage.attribute(
         .foregroundColor,
@@ -365,6 +363,36 @@ struct CodeTextViewTests {
         effectiveRange: nil
       ) as? UIColor
     }
+  }
+
+  /// Compares rendered TextKit colors with a fresh one-shot parse.
+  ///
+  /// - Parameters:
+  ///   - textView: The view containing the streamed rendition.
+  ///   - source: The complete source expected in the view.
+  ///   - highlighter: The highlighter used to create the one-shot reference.
+  /// - Throws: A highlighting or rendering error from the reference path.
+  private func expectExactHighlighting(
+    in textView: SelectableCodeTextView,
+    for source: String,
+    using highlighter: Highlighter
+  ) throws {
+    let expectedRendition = rendition(source: source)
+    let expectedSnapshot = try highlighter.highlight(source, as: .swift)
+    let expectedStorage = NSTextStorage(
+      attributedString: expectedRendition.attributedSource(source)
+    )
+    let expectedRenderer = TextKitHighlightRenderer(
+      theme: expectedRendition.syntaxTheme,
+      font: expectedRendition.font
+    )
+    try expectedRenderer.render(expectedSnapshot, in: expectedStorage)
+
+    #expect(textView.textStorage.string == source)
+    #expect(
+      allForegroundColors(in: textView.textStorage)
+        == allForegroundColors(in: expectedStorage)
+    )
   }
 
   /// Returns cumulative source revisions produced by fixed-size chunks.
@@ -470,6 +498,5 @@ struct CodeTextViewTests {
 
     /// Matches the interval used by the example's deterministic stream.
     static let streamingInterval = Duration.milliseconds(12)
-
   }
 }

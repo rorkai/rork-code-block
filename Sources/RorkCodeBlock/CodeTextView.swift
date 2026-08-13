@@ -170,17 +170,11 @@ struct CodeTextView: UIViewRepresentable {
     /// Retains the single task that drains pending renditions in order.
     private var processingTask: Task<Void, Never>?
 
-    /// Retains the debounced task that restores exact settled highlighting.
-    private var settlingTask: Task<Void, Never>?
-
     /// Holds the rendition currently represented by the TextKit storage.
     private var appliedRendition: CodeRendition?
 
-    /// Holds the stabilized syntax state represented by the TextKit storage.
-    private var renderingState: StreamingRenderingState?
-
-    /// Holds the exact latest parse before streaming stabilization is applied.
-    private var latestParsedSnapshot: HighlightSnapshot?
+    /// Holds the parsed revision represented by the TextKit storage.
+    private var appliedSnapshot: HighlightSnapshot?
 
     /// Applies snapshots and incremental updates to the TextKit storage.
     private var renderer: TextKitHighlightRenderer?
@@ -193,20 +187,20 @@ struct CodeTextView: UIViewRepresentable {
 
     /// Returns whether this coordinator has an active highlighting processor.
     var isProcessingHighlights: Bool {
-      processingTask != nil || settlingTask != nil
+      processingTask != nil
     }
 
     /// Returns whether TextKit represents the latest requested parser snapshot.
     var hasRenderedLatestSource: Bool {
       guard
         let latestRendition,
-        let latestParsedSnapshot,
+        let appliedSnapshot,
         let textView
       else {
         return false
       }
 
-      return latestParsedSnapshot.text == latestRendition.source
+      return appliedSnapshot.text == latestRendition.source
         && textView.textStorage.string == latestRendition.source
     }
 
@@ -226,19 +220,11 @@ struct CodeTextView: UIViewRepresentable {
         return
       }
 
-      cancelSettledRender()
       latestRendition = rendition
-
-      if let appliedRendition,
-        appliedRendition.hasSameAppearance(as: rendition)
-      {
-        applySource(rendition, to: textView)
-      } else {
-        applyPlain(rendition, to: textView)
-      }
 
       guard rendition.syntaxHighlighting.highlightsCurrentSource else {
         pendingRendition = nil
+        applyPlain(rendition, to: textView)
         return
       }
 
@@ -250,7 +236,6 @@ struct CodeTextView: UIViewRepresentable {
     func cancel() {
       processingTask?.cancel()
       processingTask = nil
-      cancelSettledRender()
       pendingRendition = nil
       textView = nil
     }
@@ -318,9 +303,9 @@ struct CodeTextView: UIViewRepresentable {
 
     /// Applies highlighted work when its appearance is still current.
     ///
-    /// A stale result still advances the parser session, but it does not
-    /// replace newer source already visible in TextKit. The next current
-    /// result can then update or rebuild the styles from that parser state.
+    /// A stale result still advances the parser session, but it does not update
+    /// TextKit. The next current result then commits its source and syntax
+    /// styles together.
     ///
     /// - Parameters:
     ///   - result: The complete snapshot or incremental update to render.
@@ -341,7 +326,6 @@ struct CodeTextView: UIViewRepresentable {
 
       do {
         let renderer = preparedRenderer(for: rendition)
-        let nextRenderingState: StreamingRenderingState
 
         switch result {
         case .snapshot(let snapshot):
@@ -351,30 +335,19 @@ struct CodeTextView: UIViewRepresentable {
             renderer: renderer,
             in: textView
           )
-          nextRenderingState = StreamingRenderingState(snapshot: snapshot)
 
         case .update(let previousSource, let edit, let update):
-          if textView.textStorage.string == update.snapshot.text,
-            let renderingState,
-            renderingState.snapshot.text == previousSource,
+          if textView.textStorage.string == previousSource,
+            appliedSnapshot?.text == previousSource,
             appliedRendition?.hasSameAppearance(as: rendition) == true
           {
-            let plan = StreamingRenderingPlan(
-              update: update,
-              after: edit,
-              from: renderingState
-            )
             try renderIncremental(
-              plan.update,
+              update,
+              after: edit,
               rendition: rendition,
               renderer: renderer,
               in: textView
             )
-
-            if plan.requiresSettledRender {
-              scheduleSettledRender()
-            }
-            nextRenderingState = plan.state
           } else {
             try renderComplete(
               update.snapshot,
@@ -382,66 +355,11 @@ struct CodeTextView: UIViewRepresentable {
               renderer: renderer,
               in: textView
             )
-            nextRenderingState = StreamingRenderingState(
-              snapshot: update.snapshot
-            )
           }
         }
 
         appliedRendition = rendition
-        renderingState = nextRenderingState
-        latestParsedSnapshot = result.snapshot
-      } catch {
-        applyPlain(rendition, to: textView)
-      }
-    }
-
-    /// Schedules one exact render after an append-only update burst pauses.
-    private func scheduleSettledRender() {
-      settlingTask?.cancel()
-      settlingTask = Task { [weak self] in
-        do {
-          try await Task.sleep(for: Metrics.settlingInterval)
-        } catch {
-          return
-        }
-
-        guard !Task.isCancelled, let self else {
-          return
-        }
-
-        renderSettledSnapshot()
-        settlingTask = nil
-      }
-    }
-
-    /// Cancels a complete render that no longer represents the latest source.
-    private func cancelSettledRender() {
-      settlingTask?.cancel()
-      settlingTask = nil
-    }
-
-    /// Reconciles stable streamed lines with the exact latest parse snapshot.
-    private func renderSettledSnapshot() {
-      guard
-        let textView,
-        let rendition = latestRendition,
-        let snapshot = latestParsedSnapshot,
-        snapshot.text == rendition.source,
-        textView.textStorage.string == rendition.source,
-        rendition.syntaxHighlighting.highlightsCurrentSource
-      else {
-        return
-      }
-
-      do {
-        try renderComplete(
-          snapshot,
-          rendition: rendition,
-          renderer: preparedRenderer(for: rendition),
-          in: textView
-        )
-        renderingState = StreamingRenderingState(snapshot: snapshot)
+        appliedSnapshot = result.snapshot
       } catch {
         applyPlain(rendition, to: textView)
       }
@@ -495,10 +413,17 @@ struct CodeTextView: UIViewRepresentable {
         previousSource == snapshot.text
         || snapshot.text.hasPrefix(previousSource)
 
+      textView.textStorage.beginEditing()
       textView.textStorage.setAttributedString(
         rendition.attributedSource(snapshot.text)
       )
-      try renderer.render(snapshot, in: textView.textStorage)
+      do {
+        try renderer.render(snapshot, in: textView.textStorage)
+      } catch {
+        textView.textStorage.endEditing()
+        throw error
+      }
+      textView.textStorage.endEditing()
       rebuildGeometry(of: textView, using: rendition)
 
       if preservesInteraction {
@@ -512,57 +437,22 @@ struct CodeTextView: UIViewRepresentable {
       }
     }
 
-    /// Applies incremental styles to source already updated in TextKit.
+    /// Commits one source edit and its matching syntax styles to TextKit.
     ///
     /// - Parameters:
     ///   - update: The highlight update produced after the source edit.
+    ///   - edit: The source replacement represented by the update.
     ///   - rendition: The appearance applied beneath syntax styles.
     ///   - renderer: The configured TextKit renderer.
     ///   - textView: The destination selectable text view.
     /// - Throws: ``TextKitRenderingError`` when the update cannot be rendered.
     private func renderIncremental(
       _ update: HighlightUpdate,
+      after edit: SourceEdit,
       rendition: CodeRendition,
       renderer: TextKitHighlightRenderer,
       in textView: SelectableCodeTextView
     ) throws(TextKitRenderingError) {
-      let previousSelection = textView.selectedRange
-      let previousOffset = textView.contentOffset
-
-      try renderer.render(update, in: textView.textStorage)
-      refreshGeometry(
-        of: textView,
-        using: rendition,
-        renderingRanges: update.renderingRanges
-      )
-      textView.selectedRange = previousSelection.clamped(
-        toLength: update.snapshot.text.utf16.count
-      )
-      textView.restoreContentOffset(previousOffset)
-    }
-
-    /// Applies the newest source before its coalesced highlighting completes.
-    ///
-    /// Existing attributes move with unaffected text, while inserted source
-    /// receives the base style until the matching parser update arrives.
-    ///
-    /// - Parameters:
-    ///   - rendition: The complete source and appearance to present.
-    ///   - textView: The destination selectable text view.
-    private func applySource(
-      _ rendition: CodeRendition,
-      to textView: SelectableCodeTextView
-    ) {
-      guard
-        let edit = SourceEdit.difference(
-          from: textView.textStorage.string,
-          to: rendition.source
-        )
-      else {
-        appliedRendition = rendition
-        return
-      }
-
       let previousSelection = textView.selectedRange
       let previousOffset = textView.contentOffset
       let replacementRange = edit.replacementRange
@@ -575,7 +465,6 @@ struct CodeTextView: UIViewRepresentable {
         ),
         with: edit.replacement
       )
-
       if replacementRange.length > 0 {
         textView.textStorage.setAttributes(
           rendition.baseAttributes,
@@ -585,17 +474,23 @@ struct CodeTextView: UIViewRepresentable {
           )
         )
       }
+      do {
+        try renderer.render(update, in: textView.textStorage)
+      } catch {
+        textView.textStorage.endEditing()
+        throw error
+      }
       textView.textStorage.endEditing()
 
-      appliedRendition = rendition
       refreshGeometry(
         of: textView,
         using: rendition,
-        sourceEdit: edit
+        sourceEdit: edit,
+        renderingRanges: update.renderingRanges
       )
       textView.selectedRange = previousSelection.applying(
         edit,
-        resultingLength: rendition.source.utf16.count
+        resultingLength: update.snapshot.text.utf16.count
       )
       textView.restoreContentOffset(previousOffset)
     }
@@ -609,7 +504,6 @@ struct CodeTextView: UIViewRepresentable {
       _ rendition: CodeRendition,
       to textView: SelectableCodeTextView
     ) {
-      cancelSettledRender()
       let previousSource = textView.textStorage.string
       let previousSelection = textView.selectedRange
       let previousOffset = textView.contentOffset
@@ -621,8 +515,7 @@ struct CodeTextView: UIViewRepresentable {
         rendition.attributedSource(rendition.source)
       )
       renderer = nil
-      renderingState = nil
-      latestParsedSnapshot = nil
+      appliedSnapshot = nil
       appliedRendition = rendition
 
       rebuildGeometry(of: textView, using: rendition)
@@ -660,16 +553,18 @@ struct CodeTextView: UIViewRepresentable {
       )
     }
 
-    /// Refreshes horizontal geometry after one source replacement.
+    /// Refreshes horizontal geometry after one highlighted source replacement.
     ///
     /// - Parameters:
     ///   - textView: The view whose layout should be refreshed.
     ///   - rendition: The appearance used to measure the rendered source.
     ///   - sourceEdit: The replacement already applied to TextKit storage.
+    ///   - renderingRanges: The ranges whose font traits may have changed.
     private func refreshGeometry(
       of textView: SelectableCodeTextView,
       using rendition: CodeRendition,
-      sourceEdit: SourceEdit
+      sourceEdit: SourceEdit,
+      renderingRanges: [UTF16Range]
     ) {
       guard rendition.lineWrapping == .disabled else {
         lineWidthCache.removeAll()
@@ -681,29 +576,6 @@ struct CodeTextView: UIViewRepresentable {
         after: sourceEdit,
         in: textView.textStorage
       )
-      updateGeometry(
-        of: textView,
-        widestLineWidth: lineWidthCache.widestLineWidth
-      )
-    }
-
-    /// Refreshes horizontal geometry after incremental syntax styling.
-    ///
-    /// - Parameters:
-    ///   - textView: The view whose layout should be refreshed.
-    ///   - rendition: The appearance used to measure the rendered source.
-    ///   - renderingRanges: The ranges whose font traits may have changed.
-    private func refreshGeometry(
-      of textView: SelectableCodeTextView,
-      using rendition: CodeRendition,
-      renderingRanges: [UTF16Range]
-    ) {
-      guard rendition.lineWrapping == .disabled else {
-        lineWidthCache.removeAll()
-        updateGeometry(of: textView, widestLineWidth: 1)
-        return
-      }
-
       lineWidthCache.remeasure(
         linesIntersecting: renderingRanges,
         in: textView.textStorage
@@ -732,9 +604,6 @@ struct CodeTextView: UIViewRepresentable {
     private enum Metrics {
       /// Limits highlighting work to approximately one update per display frame.
       static let coalescingInterval = Duration.milliseconds(16)
-
-      /// Waits for a streaming burst to pause before restoring exact parse styles.
-      static let settlingInterval = Duration.milliseconds(500)
     }
   }
 }
