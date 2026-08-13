@@ -144,7 +144,13 @@ struct CodeTextViewTests {
     var establishedColors: [Int: UIColor] = [:]
 
     for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
-      coordinator.enqueue(rendition(source: revision), in: textView)
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          syntaxHighlighting: .incremental(whileStreaming: true)
+        ),
+        in: textView
+      )
       #expect(textView.textStorage.string == revision)
 
       try await waitUntil { !coordinator.isProcessingHighlights }
@@ -178,12 +184,30 @@ struct CodeTextViewTests {
     )
     var establishedColors: [Int: UIColor] = [:]
 
-    coordinator.enqueue(rendition(source: swiftSource), in: textView)
+    coordinator.enqueue(
+      rendition(
+        source: swiftSource,
+        syntaxHighlighting: .incremental(whileStreaming: true)
+      ),
+      in: textView
+    )
     try await waitUntil { !coordinator.isProcessingHighlights }
-    coordinator.enqueue(rendition(source: ""), in: textView)
+    coordinator.enqueue(
+      rendition(
+        source: "",
+        syntaxHighlighting: .incremental(whileStreaming: true)
+      ),
+      in: textView
+    )
 
     for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
-      coordinator.enqueue(rendition(source: revision), in: textView)
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          syntaxHighlighting: .incremental(whileStreaming: true)
+        ),
+        in: textView
+      )
       #expect(textView.textStorage.string == revision)
 
       retainSyntaxColors(
@@ -207,6 +231,40 @@ struct CodeTextViewTests {
     expectEstablishedColors(establishedColors, in: textView.textStorage)
     #expect(!establishedColors.isEmpty)
     #expect(textView.textStorage.string == swiftSource)
+    coordinator.cancel()
+  }
+
+  /// Verifies that ending a stream replaces provisional colors with exact ones.
+  @Test("Reconciles completed streaming colors exactly")
+  func reconcilesCompletedStreamingColorsExactly() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+
+    for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          syntaxHighlighting: .incremental(whileStreaming: true)
+        ),
+        in: textView
+      )
+      try await Task.sleep(for: TestMetrics.streamingInterval)
+    }
+
+    coordinator.enqueue(
+      rendition(
+        source: swiftSource,
+        syntaxHighlighting: .incremental(whileStreaming: false)
+      ),
+      in: textView
+    )
+
+    #expect(textView.textStorage.string == swiftSource)
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    try await expectExactHighlighting(
+      in: textView.textStorage,
+      source: swiftSource
+    )
     coordinator.cancel()
   }
 
@@ -451,6 +509,32 @@ struct CodeTextViewTests {
       green: CGFloat(color.green) / 255,
       blue: CGFloat(color.blue) / 255,
       alpha: CGFloat(color.alpha) / 255
+    )
+  }
+
+  /// Checks rendered colors against a fresh one-shot highlighter snapshot.
+  ///
+  /// - Parameters:
+  ///   - textStorage: The storage containing the completed streaming result.
+  ///   - source: The complete source used for the reference snapshot.
+  /// - Throws: ``HighlighterError`` or ``TextKitRenderingError`` when the
+  ///   reference source cannot be highlighted or rendered.
+  private func expectExactHighlighting(
+    in textStorage: NSTextStorage,
+    source: String
+  ) async throws {
+    let highlighter = try Highlighter()
+    let snapshot = try highlighter.highlight(source, as: .swift)
+    let referenceStorage = NSTextStorage(string: source)
+    let renderer = TextKitHighlightRenderer(
+      theme: .rorkDark,
+      font: UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+    )
+
+    try renderer.render(snapshot, in: referenceStorage)
+    #expect(
+      allForegroundColors(in: textStorage)
+        == allForegroundColors(in: referenceStorage)
     )
   }
 

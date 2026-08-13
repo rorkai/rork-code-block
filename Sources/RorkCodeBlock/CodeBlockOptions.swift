@@ -2,12 +2,22 @@ import UIKit
 
 /// Controls when a code block colors syntax captures.
 public enum CodeSyntaxHighlighting: Hashable, Sendable {
-  /// Highlights source revisions as their parser results become available.
+  /// Applies each exact parser result as it becomes available.
   ///
-  /// Source reaches TextKit immediately. During append-only updates, text can
-  /// gain its first syntax color, but an established syntax color remains
-  /// stable. An unavailable language falls back to unstyled source.
+  /// This mode suits complete source and ordinary edits. Apps that append
+  /// streamed source should provide their streaming state through
+  /// ``incremental(whileStreaming:)`` or ``deferred(whileStreaming:)``.
+  /// An unavailable language falls back to unstyled source.
   case automatic
+
+  /// Highlights incoming source while keeping provisional colors stable.
+  ///
+  /// While streaming, text can gain its first syntax color, but an established
+  /// syntax color remains stable. Changing `whileStreaming` to `false`
+  /// reconciles the complete source with an exact parser snapshot.
+  ///
+  /// - Parameter whileStreaming: Whether the source is still receiving updates.
+  case incremental(whileStreaming: Bool)
 
   /// Presents plain source while streaming and highlights it when streaming
   /// finishes.
@@ -20,7 +30,45 @@ public enum CodeSyntaxHighlighting: Hashable, Sendable {
 
   /// Returns whether the current source revision should be highlighted.
   var highlightsCurrentSource: Bool {
-    self == .automatic || self == .deferred(whileStreaming: false)
+    switch self {
+    case .automatic, .incremental:
+      true
+    case .deferred(let whileStreaming):
+      !whileStreaming
+    case .disabled:
+      false
+    }
+  }
+
+  /// Returns whether provisional syntax colors should remain stable.
+  var preservesProvisionalColors: Bool {
+    self == .incremental(whileStreaming: true)
+  }
+
+  /// Returns whether inserted source should use the syntax theme baseline.
+  var usesSyntaxThemeBaseline: Bool {
+    switch self {
+    case .automatic, .incremental:
+      true
+    case .deferred, .disabled:
+      false
+    }
+  }
+
+  /// Returns whether two values can reuse the same visible TextKit contents.
+  ///
+  /// The active flag changes processing behavior without changing the font,
+  /// theme, or base attributes already visible in the text storage.
+  ///
+  /// - Parameter other: The highlighting behavior to compare.
+  /// - Returns: `true` when changing the value does not require a plain reset.
+  func hasCompatiblePresentation(with other: Self) -> Bool {
+    switch (self, other) {
+    case (.incremental, .incremental), (.deferred, .deferred):
+      true
+    default:
+      self == other
+    }
   }
 }
 

@@ -98,23 +98,29 @@ struct StreamingResponse: View {
     let chunks: AsyncStream<String>
 
     @State private var source = ""
+    @State private var isStreaming = false
 
     var body: some View {
         CodeBlock(source, language: .typescript)
+            .codeSyntaxHighlighting(
+                .incremental(whileStreaming: isStreaming)
+            )
             .task {
+                isStreaming = true
                 for await chunk in chunks {
                     source += chunk
                 }
+                isStreaming = false
             }
     }
 }
 ```
 
 Every source revision reaches TextKit immediately, while highlighting work runs
-in order and reuses the block's existing Tree-sitter syntax tree. In automatic
-mode, plain text can gain its first syntax color as an incomplete construct
-becomes recognizable. Once text has a syntax color, append-only updates keep it
-stable instead of exposing Tree-sitter's temporary recovery classifications.
+in order and reuses the block's existing Tree-sitter syntax tree. Incremental
+mode lets text gain its first syntax color as an incomplete construct becomes
+recognizable, then keeps that color stable while more source arrives. Changing
+`isStreaming` to `false` reconciles every color with the completed syntax tree.
 
 If stable plain text is preferable while chunks arrive, pass the producer's
 streaming state and highlight once it finishes:

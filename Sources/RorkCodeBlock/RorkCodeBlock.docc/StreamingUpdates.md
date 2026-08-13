@@ -17,13 +17,19 @@ struct StreamingResponse: View {
     let chunks: AsyncStream<String>
 
     @State private var source = ""
+    @State private var isStreaming = false
 
     var body: some View {
         CodeBlock(source, language: .swift)
+            .codeSyntaxHighlighting(
+                .incremental(whileStreaming: isStreaming)
+            )
             .task {
+                isStreaming = true
                 for await chunk in chunks {
                     source += chunk
                 }
+                isStreaming = false
             }
     }
 }
@@ -35,8 +41,12 @@ including an async sequence, an observation model, or a reducer.
 
 ## Choose when highlighting runs
 
-Incremental highlighting is enabled by default. Apps that prefer stable plain
-text during generation can supply their existing streaming state:
+Automatic highlighting applies exact parser results and suits complete source
+or ordinary edits. Streaming apps can supply their existing state through
+``CodeSyntaxHighlighting/incremental(whileStreaming:)``. This keeps provisional
+colors stable during generation and reconciles the completed source exactly.
+
+Apps that prefer stable plain text during generation can use deferred mode:
 
 ```swift
 CodeBlock(source, language: .swift)
@@ -51,10 +61,11 @@ does not need to infer when generation has ended.
 ## Understand the update path
 
 The block presents every source revision immediately, then submits highlighting
-work in order to its actor-isolated session. In automatic mode, plain text can
-gain its first syntax color as an incomplete construct becomes recognizable.
-Once text has a syntax color, append-only updates keep it stable instead of
-exposing Tree-sitter's temporary recovery classifications.
+work in order to its actor-isolated session. Incremental streaming mode lets
+plain text gain its first syntax color as an incomplete construct becomes
+recognizable. Once text has a syntax color, append-only updates keep it stable
+instead of exposing Tree-sitter's temporary recovery classifications. The
+completed source then receives one exact parser snapshot.
 
 The first highlighted revision opens a Tree-sitter session. Later revisions
 calculate one UTF-16 replacement and incrementally edit the syntax tree. TextKit

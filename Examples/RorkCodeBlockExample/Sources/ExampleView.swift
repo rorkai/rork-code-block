@@ -31,7 +31,8 @@ struct ExampleView: View {
           ExampleCodePreview(
             source: model.source,
             language: selectedLanguage.codeLanguage,
-            presentation: selectedPresentation
+            presentation: selectedPresentation,
+            isStreaming: model.isStreaming
           )
 
           Text(
@@ -164,6 +165,9 @@ private struct ExampleCodePreview: View {
   /// Holds the card presentation selected by the user.
   let presentation: ExamplePresentation
 
+  /// Reports whether the fixture is still receiving source updates.
+  let isStreaming: Bool
+
   /// Returns the code block with the selected card style.
   @ViewBuilder
   var body: some View {
@@ -185,6 +189,9 @@ private struct ExampleCodePreview: View {
     CodeBlock(source, language: language)
       .codeFontSize(14)
       .codeLineSpacing(3)
+      .codeSyntaxHighlighting(
+        .incremental(whileStreaming: isStreaming)
+      )
   }
 }
 

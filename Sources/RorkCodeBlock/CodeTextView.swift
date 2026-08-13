@@ -302,10 +302,10 @@ struct CodeTextView: UIViewRepresentable {
       }
     }
 
-    /// Advances stable syntax state and renders it when the source is current.
+    /// Advances syntax state and renders it when the source is current.
     ///
-    /// Stale results update presentation state without replacing newer source.
-    /// This preserves established colors when rapid revisions overtake parsing.
+    /// Stale streaming results update provisional presentation state without
+    /// replacing newer source. Exact modes wait for the current parser result.
     ///
     /// - Parameters:
     ///   - result: The complete snapshot or incremental update to render.
@@ -324,14 +324,31 @@ struct CodeTextView: UIViewRepresentable {
       }
 
       do {
-        let renderer = preparedRenderer(for: rendition)
+        let renderer = preparedRenderer(for: latestRendition)
         let isCurrent = latestRendition.source == result.snapshot.text
+
+        guard latestRendition.syntaxHighlighting.preservesProvisionalColors else {
+          presentation = nil
+
+          guard isCurrent else {
+            return
+          }
+
+          try renderExact(
+            result,
+            rendition: latestRendition,
+            renderer: renderer,
+            in: textView
+          )
+          appliedRendition = latestRendition
+          return
+        }
 
         switch result {
         case .snapshot(let snapshot):
           let nextPresentation = StreamingHighlightPresentation(
             snapshot: snapshot,
-            theme: rendition.syntaxTheme
+            theme: latestRendition.syntaxTheme
           )
           presentation = nextPresentation
 
@@ -341,7 +358,7 @@ struct CodeTextView: UIViewRepresentable {
 
           try renderComplete(
             nextPresentation.snapshot,
-            rendition: rendition,
+            rendition: latestRendition,
             renderer: renderer,
             in: textView
           )
@@ -357,12 +374,12 @@ struct CodeTextView: UIViewRepresentable {
           {
             result = presentation.applying(
               update,
-              theme: rendition.syntaxTheme
+              theme: latestRendition.syntaxTheme
             )
           } else {
             let nextPresentation = StreamingHighlightPresentation(
               snapshot: update.snapshot,
-              theme: rendition.syntaxTheme
+              theme: latestRendition.syntaxTheme
             )
             result = (
               HighlightUpdate(
@@ -381,27 +398,89 @@ struct CodeTextView: UIViewRepresentable {
           }
 
           if textView.textStorage.string == update.snapshot.text,
-            appliedRendition?.hasSameAppearance(as: rendition) == true
+            appliedRendition?.hasSameAppearance(as: latestRendition) == true
           {
             try renderIncremental(
               result.update,
-              rendition: rendition,
+              rendition: latestRendition,
               renderer: renderer,
               in: textView
             )
           } else {
             try renderComplete(
               result.presentation.snapshot,
-              rendition: rendition,
+              rendition: latestRendition,
               renderer: renderer,
               in: textView
             )
           }
         }
 
-        appliedRendition = rendition
+        appliedRendition = latestRendition
       } catch {
-        applyPlain(rendition, to: textView)
+        guard let latestRendition = self.latestRendition else {
+          return
+        }
+
+        applyPlain(latestRendition, to: textView)
+      }
+    }
+
+    /// Applies one exact parser result without streaming presentation changes.
+    ///
+    /// - Parameters:
+    ///   - result: The exact snapshot or update for the current source.
+    ///   - rendition: The appearance applied beneath syntax styles.
+    ///   - renderer: The configured TextKit renderer.
+    ///   - textView: The destination selectable text view.
+    /// - Throws: ``TextKitRenderingError`` when the result cannot be rendered.
+    private func renderExact(
+      _ result: StreamingHighlightResult,
+      rendition: CodeRendition,
+      renderer: TextKitHighlightRenderer,
+      in textView: SelectableCodeTextView
+    ) throws(TextKitRenderingError) {
+      switch rendition.syntaxHighlighting {
+      case .incremental(whileStreaming: false),
+        .deferred(whileStreaming: false):
+        try renderComplete(
+          result.snapshot,
+          rendition: rendition,
+          renderer: renderer,
+          in: textView
+        )
+        return
+      case .automatic, .incremental(whileStreaming: true),
+        .deferred(whileStreaming: true), .disabled:
+        break
+      }
+
+      switch result {
+      case .snapshot(let snapshot):
+        try renderComplete(
+          snapshot,
+          rendition: rendition,
+          renderer: renderer,
+          in: textView
+        )
+      case .update(_, _, let update):
+        if textView.textStorage.string == update.snapshot.text,
+          appliedRendition?.hasSameAppearance(as: rendition) == true
+        {
+          try renderIncremental(
+            update,
+            rendition: rendition,
+            renderer: renderer,
+            in: textView
+          )
+        } else {
+          try renderComplete(
+            update.snapshot,
+            rendition: rendition,
+            renderer: renderer,
+            in: textView
+          )
+        }
       }
     }
 
@@ -569,7 +648,7 @@ struct CodeTextView: UIViewRepresentable {
 
     /// Returns the neutral attributes shown before syntax is resolved.
     ///
-    /// Automatic highlighting uses the theme baseline so inserted text cannot
+    /// Active highlighting uses the theme baseline so inserted text cannot
     /// flash between the caller's fallback color and the syntax theme.
     ///
     /// - Parameter rendition: The current source and appearance values.
@@ -579,7 +658,7 @@ struct CodeTextView: UIViewRepresentable {
     ) -> [NSAttributedString.Key: Any] {
       var attributes = rendition.baseAttributes
       guard
-        rendition.syntaxHighlighting == .automatic,
+        rendition.syntaxHighlighting.usesSyntaxThemeBaseline,
         let color = rendition.syntaxTheme.baseStyle.foregroundColor
       else {
         return attributes
@@ -800,7 +879,9 @@ struct CodeRendition: Equatable {
       && lineWrapping == other.lineWrapping
       && tabWidth == other.tabWidth
       && textColor == other.textColor
-      && syntaxHighlighting == other.syntaxHighlighting
+      && syntaxHighlighting.hasCompatiblePresentation(
+        with: other.syntaxHighlighting
+      )
       && syntaxTheme == other.syntaxTheme
   }
 
