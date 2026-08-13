@@ -173,8 +173,8 @@ struct CodeTextView: UIViewRepresentable {
     /// Holds the rendition currently represented by the TextKit storage.
     private var appliedRendition: CodeRendition?
 
-    /// Holds the parsed revision represented by the TextKit storage.
-    private var appliedSnapshot: HighlightSnapshot?
+    /// Holds the syntax presentation represented by TextKit attributes.
+    private var presentation: StreamingHighlightPresentation?
 
     /// Applies snapshots and incremental updates to the TextKit storage.
     private var renderer: TextKitHighlightRenderer?
@@ -190,21 +190,7 @@ struct CodeTextView: UIViewRepresentable {
       processingTask != nil
     }
 
-    /// Returns whether TextKit represents the latest requested parser snapshot.
-    var hasRenderedLatestSource: Bool {
-      guard
-        let latestRendition,
-        let appliedSnapshot,
-        let textView
-      else {
-        return false
-      }
-
-      return appliedSnapshot.text == latestRendition.source
-        && textView.textStorage.string == latestRendition.source
-    }
-
-    /// Accepts a new SwiftUI rendition and starts coalesced processing.
+    /// Accepts a new SwiftUI rendition and starts ordered processing.
     ///
     /// - Parameters:
     ///   - rendition: The complete source and appearance to present.
@@ -222,9 +208,24 @@ struct CodeTextView: UIViewRepresentable {
 
       latestRendition = rendition
 
+      if let appliedRendition,
+        appliedRendition.hasSameAppearance(as: rendition)
+      {
+        applySource(
+          rendition,
+          baseAttributes: immediateBaseAttributes(for: rendition),
+          to: textView
+        )
+      } else {
+        applyPlain(
+          rendition,
+          baseAttributes: immediateBaseAttributes(for: rendition),
+          to: textView
+        )
+      }
+
       guard rendition.syntaxHighlighting.highlightsCurrentSource else {
         pendingRendition = nil
-        applyPlain(rendition, to: textView)
         return
       }
 
@@ -251,7 +252,7 @@ struct CodeTextView: UIViewRepresentable {
       }
     }
 
-    /// Drains the newest pending rendition after one display-frame interval.
+    /// Drains the newest pending rendition while combining queued revisions.
     ///
     /// Only this method calls ``StreamingHighlighter``, which preserves
     /// revision order even when SwiftUI supplies source updates faster than
@@ -301,11 +302,10 @@ struct CodeTextView: UIViewRepresentable {
       }
     }
 
-    /// Applies highlighted work when its appearance is still current.
+    /// Advances stable syntax state and renders it when the source is current.
     ///
-    /// A stale result still advances the parser session, but it does not update
-    /// TextKit. The next current result then commits its source and syntax
-    /// styles together.
+    /// Stale results update presentation state without replacing newer source.
+    /// This preserves established colors when rapid revisions overtake parsing.
     ///
     /// - Parameters:
     ///   - result: The complete snapshot or incremental update to render.
@@ -317,7 +317,6 @@ struct CodeTextView: UIViewRepresentable {
       guard
         let textView,
         let latestRendition,
-        latestRendition.source == result.snapshot.text,
         latestRendition.hasSameAppearance(as: rendition),
         latestRendition.syntaxHighlighting.highlightsCurrentSource
       else {
@@ -326,31 +325,73 @@ struct CodeTextView: UIViewRepresentable {
 
       do {
         let renderer = preparedRenderer(for: rendition)
+        let isCurrent = latestRendition.source == result.snapshot.text
 
         switch result {
         case .snapshot(let snapshot):
+          let nextPresentation = StreamingHighlightPresentation(
+            snapshot: snapshot,
+            theme: rendition.syntaxTheme
+          )
+          presentation = nextPresentation
+
+          guard isCurrent else {
+            return
+          }
+
           try renderComplete(
-            snapshot,
+            nextPresentation.snapshot,
             rendition: rendition,
             renderer: renderer,
             in: textView
           )
 
-        case .update(let previousSource, let edit, let update):
-          if textView.textStorage.string == previousSource,
-            appliedSnapshot?.text == previousSource,
+        case .update(let previousSource, _, let update):
+          let result:
+            (
+              update: HighlightUpdate,
+              presentation: StreamingHighlightPresentation
+            )
+          if let presentation,
+            presentation.snapshot.text == previousSource
+          {
+            result = presentation.applying(
+              update,
+              theme: rendition.syntaxTheme
+            )
+          } else {
+            let nextPresentation = StreamingHighlightPresentation(
+              snapshot: update.snapshot,
+              theme: rendition.syntaxTheme
+            )
+            result = (
+              HighlightUpdate(
+                replacedRange: update.replacedRange,
+                replacementRange: update.replacementRange,
+                invalidatedRanges: update.invalidatedRanges,
+                snapshot: nextPresentation.snapshot
+              ),
+              nextPresentation
+            )
+          }
+          self.presentation = result.presentation
+
+          guard isCurrent else {
+            return
+          }
+
+          if textView.textStorage.string == update.snapshot.text,
             appliedRendition?.hasSameAppearance(as: rendition) == true
           {
             try renderIncremental(
-              update,
-              after: edit,
+              result.update,
               rendition: rendition,
               renderer: renderer,
               in: textView
             )
           } else {
             try renderComplete(
-              update.snapshot,
+              result.presentation.snapshot,
               rendition: rendition,
               renderer: renderer,
               in: textView
@@ -359,7 +400,6 @@ struct CodeTextView: UIViewRepresentable {
         }
 
         appliedRendition = rendition
-        appliedSnapshot = result.snapshot
       } catch {
         applyPlain(rendition, to: textView)
       }
@@ -437,22 +477,60 @@ struct CodeTextView: UIViewRepresentable {
       }
     }
 
-    /// Commits one source edit and its matching syntax styles to TextKit.
+    /// Applies the stable syntax styles for source already visible in TextKit.
     ///
     /// - Parameters:
     ///   - update: The highlight update produced after the source edit.
-    ///   - edit: The source replacement represented by the update.
     ///   - rendition: The appearance applied beneath syntax styles.
     ///   - renderer: The configured TextKit renderer.
     ///   - textView: The destination selectable text view.
     /// - Throws: ``TextKitRenderingError`` when the update cannot be rendered.
     private func renderIncremental(
       _ update: HighlightUpdate,
-      after edit: SourceEdit,
       rendition: CodeRendition,
       renderer: TextKitHighlightRenderer,
       in textView: SelectableCodeTextView
     ) throws(TextKitRenderingError) {
+      let previousSelection = textView.selectedRange
+      let previousOffset = textView.contentOffset
+
+      try renderer.render(update, in: textView.textStorage)
+
+      refreshGeometry(
+        of: textView,
+        using: rendition,
+        renderingRanges: update.renderingRanges
+      )
+      textView.selectedRange = previousSelection.clamped(
+        toLength: update.snapshot.text.utf16.count
+      )
+      textView.restoreContentOffset(previousOffset)
+    }
+
+    /// Presents the newest source before its highlighting completes.
+    ///
+    /// Existing attributes move with unaffected text, while inserted source
+    /// receives the base style until its syntax color becomes stable.
+    ///
+    /// - Parameters:
+    ///   - rendition: The complete source and appearance to present.
+    ///   - baseAttributes: The attributes used for newly inserted source.
+    ///   - textView: The destination selectable text view.
+    private func applySource(
+      _ rendition: CodeRendition,
+      baseAttributes: [NSAttributedString.Key: Any],
+      to textView: SelectableCodeTextView
+    ) {
+      guard
+        let edit = SourceEdit.difference(
+          from: textView.textStorage.string,
+          to: rendition.source
+        )
+      else {
+        appliedRendition = rendition
+        return
+      }
+
       let previousSelection = textView.selectedRange
       let previousOffset = textView.contentOffset
       let replacementRange = edit.replacementRange
@@ -467,41 +545,65 @@ struct CodeTextView: UIViewRepresentable {
       )
       if replacementRange.length > 0 {
         textView.textStorage.setAttributes(
-          rendition.baseAttributes,
+          baseAttributes,
           range: NSRange(
             location: replacementRange.location,
             length: replacementRange.length
           )
         )
       }
-      do {
-        try renderer.render(update, in: textView.textStorage)
-      } catch {
-        textView.textStorage.endEditing()
-        throw error
-      }
       textView.textStorage.endEditing()
 
+      appliedRendition = rendition
       refreshGeometry(
         of: textView,
         using: rendition,
-        sourceEdit: edit,
-        renderingRanges: update.renderingRanges
+        sourceEdit: edit
       )
       textView.selectedRange = previousSelection.applying(
         edit,
-        resultingLength: update.snapshot.text.utf16.count
+        resultingLength: rendition.source.utf16.count
       )
       textView.restoreContentOffset(previousOffset)
+    }
+
+    /// Returns the neutral attributes shown before syntax is resolved.
+    ///
+    /// Automatic highlighting uses the theme baseline so inserted text cannot
+    /// flash between the caller's fallback color and the syntax theme.
+    ///
+    /// - Parameter rendition: The current source and appearance values.
+    /// - Returns: Base TextKit attributes for newly inserted source.
+    private func immediateBaseAttributes(
+      for rendition: CodeRendition
+    ) -> [NSAttributedString.Key: Any] {
+      var attributes = rendition.baseAttributes
+      guard
+        rendition.syntaxHighlighting == .automatic,
+        let color = rendition.syntaxTheme.baseStyle.foregroundColor
+      else {
+        return attributes
+      }
+
+      attributes[.foregroundColor] = UIColor(
+        red: CGFloat(color.red) / 255,
+        green: CGFloat(color.green) / 255,
+        blue: CGFloat(color.blue) / 255,
+        alpha: CGFloat(color.alpha) / 255
+      )
+      return attributes
     }
 
     /// Presents readable plain source when highlighting is disabled or fails.
     ///
     /// - Parameters:
     ///   - rendition: The source and base appearance to present.
+    ///   - baseAttributes: Optional attributes used instead of the rendition
+    ///     baseline while highlighting starts.
     ///   - textView: The destination selectable text view.
     private func applyPlain(
       _ rendition: CodeRendition,
+      baseAttributes: [NSAttributedString.Key: Any]? = nil,
       to textView: SelectableCodeTextView
     ) {
       let previousSource = textView.textStorage.string
@@ -512,10 +614,13 @@ struct CodeTextView: UIViewRepresentable {
         || rendition.source.hasPrefix(previousSource)
 
       textView.textStorage.setAttributedString(
-        rendition.attributedSource(rendition.source)
+        NSAttributedString(
+          string: rendition.source,
+          attributes: baseAttributes ?? rendition.baseAttributes
+        )
       )
       renderer = nil
-      appliedSnapshot = nil
+      presentation = nil
       appliedRendition = rendition
 
       rebuildGeometry(of: textView, using: rendition)
@@ -553,18 +658,16 @@ struct CodeTextView: UIViewRepresentable {
       )
     }
 
-    /// Refreshes horizontal geometry after one highlighted source replacement.
+    /// Refreshes horizontal geometry after one source replacement.
     ///
     /// - Parameters:
     ///   - textView: The view whose layout should be refreshed.
     ///   - rendition: The appearance used to measure the rendered source.
     ///   - sourceEdit: The replacement already applied to TextKit storage.
-    ///   - renderingRanges: The ranges whose font traits may have changed.
     private func refreshGeometry(
       of textView: SelectableCodeTextView,
       using rendition: CodeRendition,
-      sourceEdit: SourceEdit,
-      renderingRanges: [UTF16Range]
+      sourceEdit: SourceEdit
     ) {
       guard rendition.lineWrapping == .disabled else {
         lineWidthCache.removeAll()
@@ -576,6 +679,29 @@ struct CodeTextView: UIViewRepresentable {
         after: sourceEdit,
         in: textView.textStorage
       )
+      updateGeometry(
+        of: textView,
+        widestLineWidth: lineWidthCache.widestLineWidth
+      )
+    }
+
+    /// Refreshes horizontal geometry after syntax styling changes.
+    ///
+    /// - Parameters:
+    ///   - textView: The view whose layout should be refreshed.
+    ///   - rendition: The appearance used to measure the rendered source.
+    ///   - renderingRanges: The ranges whose font traits may have changed.
+    private func refreshGeometry(
+      of textView: SelectableCodeTextView,
+      using rendition: CodeRendition,
+      renderingRanges: [UTF16Range]
+    ) {
+      guard rendition.lineWrapping == .disabled else {
+        lineWidthCache.removeAll()
+        updateGeometry(of: textView, widestLineWidth: 1)
+        return
+      }
+
       lineWidthCache.remeasure(
         linesIntersecting: renderingRanges,
         in: textView.textStorage
@@ -600,7 +726,7 @@ struct CodeTextView: UIViewRepresentable {
       textView.invalidateIntrinsicContentSize()
     }
 
-    /// Stores the brief interval used to combine rapid token updates.
+    /// Stores the brief interval used to combine rapid parser updates.
     private enum Metrics {
       /// Limits highlighting work to approximately one update per display frame.
       static let coalescingInterval = Duration.milliseconds(16)

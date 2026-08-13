@@ -50,17 +50,17 @@ does not need to infer when generation has ended.
 
 ## Understand the update path
 
-The block combines rapid revisions over a short display-frame interval, then
-submits the newest source to its actor-isolated highlighting session. In
-automatic mode, the TextKit view advances only when that source revision and
-its parser snapshot can be committed together. This can leave the visible text
-briefly behind a rapidly changing producer.
+The block presents every source revision immediately, then submits highlighting
+work in order to its actor-isolated session. In automatic mode, plain text can
+gain its first syntax color as an incomplete construct becomes recognizable.
+Once text has a syntax color, append-only updates keep it stable instead of
+exposing Tree-sitter's temporary recovery classifications.
 
 The first highlighted revision opens a Tree-sitter session. Later revisions
-calculate one UTF-16 replacement, incrementally edit the syntax tree, and apply
-the same replacement and focused rendering ranges to TextKit in one editing
-transaction. A parser result superseded by a newer source revision still
-advances the Tree-sitter session but never becomes visible on its own.
+calculate one UTF-16 replacement and incrementally edit the syntax tree. TextKit
+applies only newly resolved syntax ranges. A parser result superseded by newer
+source still advances both parser and presentation state without replacing the
+newer text already on screen.
 
 A replacement elsewhere in the source continues to use the complete
 invalidation ranges reported by Rork Highlighter. A language or theme change

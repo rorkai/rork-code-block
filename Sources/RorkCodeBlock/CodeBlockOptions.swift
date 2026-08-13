@@ -4,9 +4,9 @@ import UIKit
 public enum CodeSyntaxHighlighting: Hashable, Sendable {
   /// Highlights source revisions as their parser results become available.
   ///
-  /// Each visible source revision and its matching syntax styles reach TextKit
-  /// together. The visible source may briefly trail a rapidly changing
-  /// producer. An unavailable language falls back to unstyled source.
+  /// Source reaches TextKit immediately. During append-only updates, text can
+  /// gain its first syntax color, but an established syntax color remains
+  /// stable. An unavailable language falls back to unstyled source.
   case automatic
 
   /// Presents plain source while streaming and highlights it when streaming

@@ -110,12 +110,11 @@ struct StreamingResponse: View {
 }
 ```
 
-Highlighting work is combined over a brief display-frame interval, and later
-revisions reuse the block's existing Tree-sitter syntax tree. In automatic
-mode, each visible source revision and its exact syntax styles are committed to
-TextKit together. This prevents an unhighlighted source frame from appearing
-while the matching parser result is still in flight. The visible source can
-therefore trail a rapidly changing producer briefly.
+Every source revision reaches TextKit immediately, while highlighting work runs
+in order and reuses the block's existing Tree-sitter syntax tree. In automatic
+mode, plain text can gain its first syntax color as an incomplete construct
+becomes recognizable. Once text has a syntax color, append-only updates keep it
+stable instead of exposing Tree-sitter's temporary recovery classifications.
 
 If stable plain text is preferable while chunks arrive, pass the producer's
 streaming state and highlight once it finishes:

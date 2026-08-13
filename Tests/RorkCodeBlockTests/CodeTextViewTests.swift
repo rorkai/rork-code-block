@@ -43,7 +43,7 @@ struct CodeTextViewTests {
       coordinator.enqueue(rendition(source: revision), in: textView)
     }
 
-    #expect(textView.textStorage.string != revisions.last)
+    #expect(textView.textStorage.string == revisions.last)
 
     try await waitUntil {
       guard textView.textStorage.length > 4 else {
@@ -98,80 +98,115 @@ struct CodeTextViewTests {
     coordinator.cancel()
   }
 
-  /// Verifies that source never advances ahead of its syntax snapshot.
-  @Test("Commits streaming source with matching highlights")
-  func commitsStreamingSourceWithMatchingHighlights() async throws {
+  /// Verifies that source appears before asynchronous highlighting completes.
+  @Test("Presents streamed source immediately")
+  func presentsStreamedSourceImmediately() {
     let textView = SelectableCodeTextView()
     let coordinator = CodeTextView.Coordinator()
-    let referenceHighlighter = try Highlighter()
-    var previouslyRenderedSource = ""
+    let source = "import SwiftUI"
 
-    for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
-      coordinator.enqueue(rendition(source: revision), in: textView)
+    coordinator.enqueue(rendition(source: source), in: textView)
 
-      let visibleSource = textView.textStorage.string
-      #expect(
-        visibleSource == previouslyRenderedSource,
-        "Revision \(revision.utf16.count) appeared before highlighting"
-      )
+    #expect(textView.textStorage.string == source)
+    coordinator.cancel()
+  }
 
-      try await Task.sleep(for: TestMetrics.streamingInterval)
-      previouslyRenderedSource = textView.textStorage.string
+  /// Verifies that new source starts with the syntax theme's neutral color.
+  @Test("Presents streamed source with the theme baseline")
+  func presentsStreamedSourceWithThemeBaseline() {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let source = "import SwiftUI"
 
-      if !previouslyRenderedSource.isEmpty {
-        try expectExactHighlighting(
-          in: textView,
-          for: previouslyRenderedSource,
-          using: referenceHighlighter
-        )
-      }
-    }
+    coordinator.enqueue(rendition(source: source), in: textView)
 
-    try await waitUntil { coordinator.hasRenderedLatestSource }
-    try expectExactHighlighting(
-      in: textView,
-      for: swiftSource,
-      using: referenceHighlighter
+    let color =
+      textView.textStorage.attribute(
+        .foregroundColor,
+        at: 0,
+        effectiveRange: nil
+      ) as? UIColor
+    #expect(
+      color
+        == nativeColor(HighlightTheme.rorkDark.baseStyle.foregroundColor)
     )
     coordinator.cancel()
   }
 
-  /// Verifies that parser results remain exact after a coalesced append.
-  @Test("Renders exact styles after a coalesced append")
-  func rendersExactStylesAfterACoalescedAppend() async throws {
+  /// Verifies that established syntax colors do not change during a stream.
+  @Test("Keeps streamed syntax colors stable")
+  func keepsStreamedSyntaxColorsStable() async throws {
     let textView = SelectableCodeTextView()
     let coordinator = CodeTextView.Coordinator()
-    let referenceHighlighter = try Highlighter()
-    let initialSource = #"""
-      import SwiftUI
-
-      struct Greeting: View {
-      """#
-    let finalSource =
-      initialSource + #"""
-
-            var body: some View {
-                Text("Hello")
-            }
-        }
-        """#
-
-    coordinator.enqueue(rendition(source: initialSource), in: textView)
-    try await waitUntil {
-      !coordinator.isProcessingHighlights
-    }
-
-    let finalRendition = rendition(source: finalSource)
-    coordinator.enqueue(finalRendition, in: textView)
-    try await waitUntil {
-      !coordinator.isProcessingHighlights
-    }
-
-    try expectExactHighlighting(
-      in: textView,
-      for: finalSource,
-      using: referenceHighlighter
+    let baseColor = nativeColor(
+      HighlightTheme.rorkDark.baseStyle.foregroundColor
     )
+    var establishedColors: [Int: UIColor] = [:]
+
+    for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
+      coordinator.enqueue(rendition(source: revision), in: textView)
+      #expect(textView.textStorage.string == revision)
+
+      try await waitUntil { !coordinator.isProcessingHighlights }
+
+      let colors = allForegroundColors(in: textView.textStorage)
+      for (offset, color) in establishedColors {
+        #expect(
+          colors[offset] == color,
+          "Color changed at UTF-16 offset \(offset)"
+        )
+      }
+      for (offset, color) in colors.enumerated() where color != baseColor {
+        if let color {
+          establishedColors[offset] = color
+        }
+      }
+    }
+
+    #expect(!establishedColors.isEmpty)
+    #expect(textView.textStorage.string == swiftSource)
+    coordinator.cancel()
+  }
+
+  /// Verifies color stability when source outruns parser processing.
+  @Test("Keeps rapid streamed syntax colors stable")
+  func keepsRapidStreamedSyntaxColorsStable() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let baseColor = nativeColor(
+      HighlightTheme.rorkDark.baseStyle.foregroundColor
+    )
+    var establishedColors: [Int: UIColor] = [:]
+
+    coordinator.enqueue(rendition(source: swiftSource), in: textView)
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    coordinator.enqueue(rendition(source: ""), in: textView)
+
+    for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
+      coordinator.enqueue(rendition(source: revision), in: textView)
+      #expect(textView.textStorage.string == revision)
+
+      retainSyntaxColors(
+        in: textView.textStorage,
+        excluding: baseColor,
+        establishedColors: &establishedColors
+      )
+      try await Task.sleep(for: TestMetrics.streamingInterval)
+      expectEstablishedColors(
+        establishedColors,
+        in: textView.textStorage
+      )
+      retainSyntaxColors(
+        in: textView.textStorage,
+        excluding: baseColor,
+        establishedColors: &establishedColors
+      )
+    }
+
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    expectEstablishedColors(establishedColors, in: textView.textStorage)
+    #expect(!establishedColors.isEmpty)
+    #expect(textView.textStorage.string == swiftSource)
     coordinator.cancel()
   }
 
@@ -365,33 +400,57 @@ struct CodeTextViewTests {
     }
   }
 
-  /// Compares rendered TextKit colors with a fresh one-shot parse.
+  /// Checks every syntax color established by an earlier stream revision.
   ///
   /// - Parameters:
-  ///   - textView: The view containing the streamed rendition.
-  ///   - source: The complete source expected in the view.
-  ///   - highlighter: The highlighter used to create the one-shot reference.
-  /// - Throws: A highlighting or rendering error from the reference path.
-  private func expectExactHighlighting(
-    in textView: SelectableCodeTextView,
-    for source: String,
-    using highlighter: Highlighter
-  ) throws {
-    let expectedRendition = rendition(source: source)
-    let expectedSnapshot = try highlighter.highlight(source, as: .swift)
-    let expectedStorage = NSTextStorage(
-      attributedString: expectedRendition.attributedSource(source)
-    )
-    let expectedRenderer = TextKitHighlightRenderer(
-      theme: expectedRendition.syntaxTheme,
-      font: expectedRendition.font
-    )
-    try expectedRenderer.render(expectedSnapshot, in: expectedStorage)
+  ///   - establishedColors: Syntax colors keyed by their UTF-16 offsets.
+  ///   - textStorage: The storage containing the newest source revision.
+  private func expectEstablishedColors(
+    _ establishedColors: [Int: UIColor],
+    in textStorage: NSTextStorage
+  ) {
+    let colors = allForegroundColors(in: textStorage)
+    for (offset, color) in establishedColors {
+      #expect(
+        colors[offset] == color,
+        "Color changed at UTF-16 offset \(offset)"
+      )
+    }
+  }
 
-    #expect(textView.textStorage.string == source)
-    #expect(
-      allForegroundColors(in: textView.textStorage)
-        == allForegroundColors(in: expectedStorage)
+  /// Remembers syntax colors that have become visible in TextKit.
+  ///
+  /// - Parameters:
+  ///   - textStorage: The storage containing the current source revision.
+  ///   - baseColor: The theme color that does not represent syntax.
+  ///   - establishedColors: Syntax colors retained across later revisions.
+  private func retainSyntaxColors(
+    in textStorage: NSTextStorage,
+    excluding baseColor: UIColor?,
+    establishedColors: inout [Int: UIColor]
+  ) {
+    for (offset, color) in allForegroundColors(in: textStorage).enumerated()
+    where color != baseColor {
+      if let color {
+        establishedColors[offset] = color
+      }
+    }
+  }
+
+  /// Converts a renderer-neutral theme color for native comparisons.
+  ///
+  /// - Parameter color: The optional sRGB color supplied by the theme.
+  /// - Returns: The equivalent UIKit color, or `nil` when none is supplied.
+  private func nativeColor(_ color: HighlightColor?) -> UIColor? {
+    guard let color else {
+      return nil
+    }
+
+    return UIColor(
+      red: CGFloat(color.red) / 255,
+      green: CGFloat(color.green) / 255,
+      blue: CGFloat(color.blue) / 255,
+      alpha: CGFloat(color.alpha) / 255
     )
   }
 
@@ -496,7 +555,8 @@ struct CodeTextViewTests {
     /// Keeps the test responsive without busy-waiting on the main actor.
     static let pollingInterval = Duration.milliseconds(10)
 
-    /// Matches the interval used by the example's deterministic stream.
+    /// Matches the example app's rapid source cadence.
     static let streamingInterval = Duration.milliseconds(12)
+
   }
 }
