@@ -114,11 +114,12 @@ struct StreamingResponse: View {
 The plain source update is immediate. Highlighting work is combined over a
 brief display-frame interval, and later revisions reuse the block's existing
 Tree-sitter syntax tree. During append-only bursts, completed lines retain
-the captures established when each line completed, while previously unresolved
-syntax can still gain color. The active line follows the latest parse. This
-prevents temporary parser error recovery in an unfinished expression from
-making earlier code flicker. The block reconciles the exact complete snapshot
-after updates pause without delaying newly resolved colors.
+their established captures through temporary error recovery. If Tree-sitter
+explicitly invalidates a completed token and supplies a replacement capture for
+the same range, the replacement supersedes the stale capture. Previously
+unresolved syntax can still gain color, and the active line follows the latest
+parse. The block reconciles the exact complete snapshot after updates pause
+without changing colors that were already correct in the final streamed frame.
 
 If stable plain text is preferable while chunks arrive, pass the producer's
 streaming state and highlight once it finishes:

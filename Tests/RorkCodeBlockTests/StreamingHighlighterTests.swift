@@ -1,3 +1,4 @@
+import Foundation
 import RorkHighlighter
 import Testing
 import UIKit
@@ -7,6 +8,28 @@ import UIKit
 /// Verifies that one code block reuses ordered Tree-sitter revisions.
 @Suite("Streaming highlighter")
 struct StreamingHighlighterTests {
+  /// Verifies that coalescing cannot leave recovery captures in the final frame.
+  @MainActor
+  @Test("Matches exact colors after coalesced Swift revisions")
+  func matchesExactColorsAfterCoalescedSwiftRevisions() async throws {
+    for stride in 1...12 {
+      let revisions = streamedRevisions(of: swiftSource, chunkSize: 7)
+      let selectedRevisions = revisions.enumerated().compactMap { index, source in
+        (index + 1).isMultiple(of: stride) || index == revisions.indices.last
+          ? source
+          : nil
+      }
+      let differingOffsets = try await differingFinalOffsets(
+        for: selectedRevisions
+      )
+
+      #expect(
+        differingOffsets.isEmpty,
+        "Stride \(stride) changed UTF-16 offsets \(differingOffsets)"
+      )
+    }
+  }
+
   /// Verifies that completed lines stay stable while incomplete Swift streams.
   @MainActor
   @Test("Keeps completed Swift lines stable while streaming")
@@ -16,8 +39,8 @@ struct StreamingHighlighterTests {
     let font = UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
     let renderer = TextKitHighlightRenderer(theme: .rorkDark, font: font)
     let textStorage = NSTextStorage()
-    var stableTypeColor: UIColor?
-    var observedRecoveryReclassification = false
+    var stableImportColor: UIColor?
+    var observedStableImport = false
     var latestSnapshot: HighlightSnapshot?
     var renderingState: StreamingRenderingState?
 
@@ -47,48 +70,26 @@ struct StreamingHighlighterTests {
         renderingState = plan.state
       }
 
-      let referenceSnapshot = try referenceHighlighter.highlight(
-        source,
-        as: .swift
-      )
-      let referenceStorage = NSTextStorage(string: source)
-      let referenceRenderer = TextKitHighlightRenderer(
-        theme: .rorkDark,
-        font: font
-      )
-      try referenceRenderer.render(referenceSnapshot, in: referenceStorage)
-
-      let typeRange = (source as NSString).range(of: "StreamingReply")
-      if typeRange.location != NSNotFound, source.utf16.count >= 70 {
-        let incrementalTypeColor =
+      if source.utf16.count >= 21 {
+        let importColor =
           textStorage.attribute(
             .foregroundColor,
-            at: typeRange.location,
+            at: 0,
             effectiveRange: nil
           ) as? UIColor
-        let referenceTypeColor =
-          referenceStorage.attribute(
-            .foregroundColor,
-            at: typeRange.location,
-            effectiveRange: nil
-          ) as? UIColor
-
-        if let stableTypeColor {
+        if let stableImportColor {
           #expect(
-            incrementalTypeColor == stableTypeColor,
-            "A completed type changed color at source length \(source.utf16.count)"
+            importColor == stableImportColor,
+            "A settled import changed color at length \(source.utf16.count)"
           )
+          observedStableImport = true
         } else {
-          stableTypeColor = incrementalTypeColor
-        }
-
-        if incrementalTypeColor != referenceTypeColor {
-          observedRecoveryReclassification = true
+          stableImportColor = importColor
         }
       }
     }
 
-    #expect(observedRecoveryReclassification)
+    #expect(observedStableImport)
 
     guard let latestSnapshot else {
       Issue.record("Expected a final streamed snapshot")
@@ -246,6 +247,65 @@ struct StreamingHighlighterTests {
     }
 
     return revisions
+  }
+
+  /// Returns final color differences for one streamed revision sequence.
+  ///
+  /// - Parameter revisions: The cumulative source revisions to process.
+  /// - Returns: UTF-16 offsets whose rendered colors differ.
+  @MainActor
+  private func differingFinalOffsets(
+    for revisions: [String]
+  ) async throws -> [Int] {
+    let streamingHighlighter = StreamingHighlighter()
+    let referenceHighlighter = try Highlighter()
+    let font = UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+    let renderer = TextKitHighlightRenderer(theme: .rorkDark, font: font)
+    let textStorage = NSTextStorage()
+    var renderingState: StreamingRenderingState?
+
+    for source in revisions {
+      let result = try await streamingHighlighter.highlight(source, as: .swift)
+
+      switch result {
+      case .snapshot(let snapshot):
+        textStorage.setAttributedString(NSAttributedString(string: source))
+        try renderer.render(snapshot, in: textStorage)
+        renderingState = StreamingRenderingState(snapshot: snapshot)
+
+      case .update(_, let edit, let update):
+        textStorage.replaceCharacters(
+          in: NSRange(location: edit.range.location, length: edit.range.length),
+          with: edit.replacement
+        )
+        let previousState = try #require(renderingState)
+        let plan = StreamingRenderingPlan(
+          update: update,
+          after: edit,
+          from: previousState
+        )
+        try renderer.render(plan.update, in: textStorage)
+        renderingState = plan.state
+      }
+    }
+
+    let referenceSnapshot = try referenceHighlighter.highlight(
+      swiftSource,
+      as: .swift
+    )
+    let referenceStorage = NSTextStorage(string: swiftSource)
+    let referenceRenderer = TextKitHighlightRenderer(
+      theme: .rorkDark,
+      font: font
+    )
+    try referenceRenderer.render(referenceSnapshot, in: referenceStorage)
+
+    return zip(
+      foregroundColors(in: textStorage),
+      foregroundColors(in: referenceStorage)
+    ).enumerated().compactMap { offset, colors in
+      colors.0 == colors.1 ? nil : offset
+    }
   }
 
   /// Returns the foreground color at every UTF-16 offset in TextKit storage.

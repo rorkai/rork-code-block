@@ -114,6 +114,28 @@ struct StreamingRenderingPlan {
         && knownProtectedHighlights.insert(highlight).inserted
     }
 
+    let currentHighlightRanges = Set(update.snapshot.highlights.map(\.range))
+    let resolvedProtectedRanges: Set<UTF16Range> = Set(
+      protectedHighlights.compactMap { highlight -> UTF16Range? in
+        // A replacement capture for an invalidated token makes older scopes
+        // at that exact range stale. Keeping both lets their application order
+        // decide the visible color and can make the settled render change it.
+        guard
+          currentHighlightRanges.contains(highlight.range),
+          update.invalidatedRanges.contains(where: {
+            $0.overlaps(highlight.range)
+          })
+        else {
+          return nil
+        }
+        return highlight.range
+      }
+    )
+    protectedHighlights.removeAll { highlight in
+      resolvedProtectedRanges.contains(highlight.range)
+        && !update.snapshot.highlights.contains(highlight)
+    }
+
     var knownHighlights = Set(update.snapshot.highlights)
     let retainedHighlights = protectedHighlights.filter {
       knownHighlights.insert($0).inserted

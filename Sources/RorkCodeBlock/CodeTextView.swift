@@ -196,6 +196,20 @@ struct CodeTextView: UIViewRepresentable {
       processingTask != nil || settlingTask != nil
     }
 
+    /// Returns whether TextKit represents the latest requested parser snapshot.
+    var hasRenderedLatestSource: Bool {
+      guard
+        let latestRendition,
+        let latestParsedSnapshot,
+        let textView
+      else {
+        return false
+      }
+
+      return latestParsedSnapshot.text == latestRendition.source
+        && textView.textStorage.string == latestRendition.source
+    }
+
     /// Accepts a new SwiftUI rendition and starts coalesced processing.
     ///
     /// - Parameters:

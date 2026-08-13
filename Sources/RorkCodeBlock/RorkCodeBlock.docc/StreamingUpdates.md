@@ -58,12 +58,13 @@ highlighting session.
 The first highlighted revision opens a Tree-sitter session. Later revisions
 calculate one UTF-16 replacement, incrementally edit the syntax tree, and apply
 focused rendering ranges through TextKit. During append-only bursts, captures
-established when a line completes remain stable while previously unresolved
-syntax can accept newly recognized captures. The active line always follows
-the current syntax tree. This prevents temporary error recovery around an
-unfinished token or expression from making earlier declarations flicker or
-delaying newly resolved colors. One complete render restores the exact latest
-snapshot after updates pause.
+established when a line completes survive temporary error recovery. When
+Tree-sitter explicitly invalidates a completed token and supplies a replacement
+capture for the same range, the replacement removes the stale capture.
+Previously unresolved syntax can still accept newly recognized captures, and
+the active line always follows the current syntax tree. One complete render
+restores the exact latest snapshot after updates pause without recoloring an
+already correct final streamed frame.
 
 A replacement elsewhere in the source continues to use the complete
 invalidation ranges reported by Rork Highlighter. A language or theme change

@@ -94,6 +94,46 @@ struct CodeTextViewTests {
     coordinator.cancel()
   }
 
+  /// Verifies that the example cadence reaches exact colors before settling.
+  @Test("Keeps final example colors stable through settling")
+  func keepsFinalExampleColorsStableThroughSettling() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+
+    for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
+      coordinator.enqueue(rendition(source: revision), in: textView)
+      try await Task.sleep(for: TestMetrics.streamingInterval)
+    }
+
+    try await waitUntil {
+      coordinator.hasRenderedLatestSource
+    }
+    let colorsBeforeSettling = allForegroundColors(in: textView.textStorage)
+
+    try await waitUntil {
+      !coordinator.isProcessingHighlights
+    }
+
+    let snapshot = try Highlighter().highlight(swiftSource, as: .swift)
+    let finalRendition = rendition(source: swiftSource)
+    let referenceStorage = NSTextStorage(
+      attributedString: finalRendition.attributedSource(swiftSource)
+    )
+    let referenceRenderer = TextKitHighlightRenderer(
+      theme: finalRendition.syntaxTheme,
+      font: finalRendition.font
+    )
+    try referenceRenderer.render(snapshot, in: referenceStorage)
+
+    #expect(
+      colorsBeforeSettling == allForegroundColors(in: referenceStorage)
+    )
+    #expect(
+      allForegroundColors(in: textView.textStorage) == colorsBeforeSettling
+    )
+    coordinator.cancel()
+  }
+
   /// Verifies that a paused append stream receives one exact complete render.
   @Test("Reconciles exact styles after streaming settles")
   func reconcilesExactStylesAfterStreamingSettles() async throws {
@@ -327,6 +367,54 @@ struct CodeTextViewTests {
     }
   }
 
+  /// Returns cumulative source revisions produced by fixed-size chunks.
+  ///
+  /// - Parameters:
+  ///   - source: The complete source reconstructed by the revisions.
+  ///   - chunkSize: The maximum number of characters added per revision.
+  /// - Returns: Every cumulative source revision in streaming order.
+  private func streamedRevisions(
+    of source: String,
+    chunkSize: Int
+  ) -> [String] {
+    var revisions: [String] = []
+    var end = source.startIndex
+
+    while end < source.endIndex {
+      end =
+        source.index(
+          end,
+          offsetBy: chunkSize,
+          limitedBy: source.endIndex
+        ) ?? source.endIndex
+      revisions.append(String(source[..<end]))
+    }
+
+    return revisions
+  }
+
+  /// Holds the Swift fixture emitted by the example app.
+  private var swiftSource: String {
+    #"""
+    import RorkCodeBlock
+    import SwiftUI
+
+    struct StreamingReply: View {
+        let chunks: AsyncStream<String>
+        @State private var source = ""
+
+        var body: some View {
+            CodeBlock(source, language: .swift)
+                .task {
+                    for await chunk in chunks {
+                        source += chunk
+                    }
+                }
+        }
+    }
+    """#
+  }
+
   /// Creates the stable appearance shared by text view tests.
   ///
   /// - Parameters:
@@ -379,6 +467,9 @@ struct CodeTextViewTests {
 
     /// Keeps the test responsive without busy-waiting on the main actor.
     static let pollingInterval = Duration.milliseconds(10)
+
+    /// Matches the interval used by the example's deterministic stream.
+    static let streamingInterval = Duration.milliseconds(12)
 
   }
 }
