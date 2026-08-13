@@ -115,7 +115,7 @@ revisions reuse the block's existing Tree-sitter syntax tree. In automatic
 mode, each visible source revision and its exact syntax styles are committed to
 TextKit together. This prevents an unhighlighted source frame from appearing
 while the matching parser result is still in flight. The visible source can
-therefore trail the producer by one coalescing interval during a rapid stream.
+therefore trail a rapidly changing producer briefly.
 
 If stable plain text is preferable while chunks arrive, pass the producer's
 streaming state and highlight once it finishes:

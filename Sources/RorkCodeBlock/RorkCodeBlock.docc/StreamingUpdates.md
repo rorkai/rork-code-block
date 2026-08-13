@@ -54,7 +54,7 @@ The block combines rapid revisions over a short display-frame interval, then
 submits the newest source to its actor-isolated highlighting session. In
 automatic mode, the TextKit view advances only when that source revision and
 its parser snapshot can be committed together. This can leave the visible text
-one coalescing interval behind the producer during a rapid burst.
+briefly behind a rapidly changing producer.
 
 The first highlighted revision opens a Tree-sitter session. Later revisions
 calculate one UTF-16 replacement, incrementally edit the syntax tree, and apply
