@@ -450,10 +450,8 @@ struct StreamingHighlightPresentationTests {
     // Each revision appends 28 units, enough to confirm within two
     // observations if the alternation failed to restart survival.
     for revision in 1...8 {
-      let text = "person.name" + String(
-        repeating: ".",
-        count: 28 * revision
-      )
+      let appended = String(repeating: ".", count: 28 * revision)
+      let text = "person.name" + appended
       let previousLength = text.utf16.count - 28
       let scope = revision.isMultiple(of: 2) ? "type" : "variable.member"
       let (update, advanced) = presentation.applying(
@@ -509,10 +507,8 @@ struct StreamingHighlightPresentationTests {
     // Each revision appends 45 units, so the conflicting keyword guess is
     // confirmed from the second observation onward and must still lose.
     for revision in 1...4 {
-      let text = "Person" + String(
-        repeating: "?",
-        count: 45 * revision
-      )
+      let appended = String(repeating: "?", count: 45 * revision)
+      let text = "Person" + appended
       let previousLength = text.utf16.count - 45
       let (_, advanced) = presentation.applying(
         HighlightUpdate(
