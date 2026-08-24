@@ -118,9 +118,13 @@ struct StreamingResponse: View {
 
 Every source revision reaches TextKit immediately, while highlighting work runs
 in order and reuses the block's existing Tree-sitter syntax tree. Incremental
-mode lets text gain its first syntax color as an incomplete construct becomes
-recognizable, then keeps that color stable while more source arrives. Changing
-`isStreaming` to `false` reconciles every color with the completed syntax tree.
+mode colors the settled part of the source exactly, and syntax still inside
+parser recovery colors as soon as its classification has outlived a short
+stretch of appended source, so long multiline constructs color while they
+stream at any chunk size, and individual symbols neither flicker nor show
+colors the finished snippet will not have. Changing `isStreaming` to `false`
+reconciles the completed source with a fresh parse, which matches one-shot
+highlighting exactly.
 
 If stable plain text is preferable while chunks arrive, pass the producer's
 streaming state and highlight once it finishes:

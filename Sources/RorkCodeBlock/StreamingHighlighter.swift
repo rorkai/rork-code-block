@@ -85,6 +85,16 @@ public actor StreamingHighlighter {
     }
   }
 
+  /// Discards the incremental session so the next revision parses freshly.
+  ///
+  /// Tree-sitter's error recovery is path dependent, so a long incremental
+  /// stream can settle on a different recovery shape than a one-shot parse
+  /// of the same text. Resetting when a stream finishes guarantees that the
+  /// reconciled result equals a one-shot highlight of the completed source.
+  public func endSession() {
+    reset()
+  }
+
   /// Opens a new incremental session for a source and language pair.
   ///
   /// - Parameters:

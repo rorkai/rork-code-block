@@ -176,6 +176,15 @@ struct CodeTextView: UIViewRepresentable {
     /// Holds the syntax presentation represented by TextKit attributes.
     private var presentation: StreamingHighlightPresentation?
 
+    /// Records whether the parse session has consumed streamed revisions.
+    ///
+    /// Tree-sitter's error recovery is path dependent, so a session that
+    /// parsed a stream chunk by chunk can settle on another recovery shape
+    /// than a fresh parse of the same text. The flag requests one fresh
+    /// parse when streaming ends so reconciliation matches one-shot
+    /// highlighting exactly.
+    private var hasStreamedRevisions = false
+
     /// Applies snapshots and incremental updates to the TextKit storage.
     private var renderer: TextKitHighlightRenderer?
 
@@ -222,6 +231,10 @@ struct CodeTextView: UIViewRepresentable {
           baseAttributes: immediateBaseAttributes(for: rendition),
           to: textView
         )
+      }
+
+      if rendition.syntaxHighlighting.isActivelyStreaming {
+        hasStreamedRevisions = true
       }
 
       guard rendition.syntaxHighlighting.highlightsCurrentSource else {
@@ -275,6 +288,15 @@ struct CodeTextView: UIViewRepresentable {
         pendingRendition = nil
 
         do {
+          // The flag resets before the suspension so a stream that starts
+          // while the session closes keeps its own reconciliation request.
+          if hasStreamedRevisions,
+            !rendition.syntaxHighlighting.isActivelyStreaming
+          {
+            hasStreamedRevisions = false
+            await highlighter.endSession()
+          }
+
           let result = try await highlighter.highlight(
             rendition.source,
             as: rendition.language
@@ -304,7 +326,7 @@ struct CodeTextView: UIViewRepresentable {
 
     /// Advances syntax state and renders it when the source is current.
     ///
-    /// Stale streaming results update provisional presentation state without
+    /// Stale streaming results advance the presentation state without
     /// replacing newer source. Exact modes wait for the current parser result.
     ///
     /// - Parameters:
@@ -377,15 +399,25 @@ struct CodeTextView: UIViewRepresentable {
               theme: latestRendition.syntaxTheme
             )
           } else {
+            // A rebuilt presentation invalidates the complete document.
+            // The parser's own ranges describe capture changes between
+            // session revisions, but the storage may hold plain inserts or
+            // styles from a superseded presentation, and only a full
+            // repaint makes every rebuilt style visible.
             let nextPresentation = StreamingHighlightPresentation(
               snapshot: update.snapshot,
               theme: latestRendition.syntaxTheme
+            )
+            let documentRange = UTF16Range(
+              location: 0,
+              length: update.snapshot.text.utf16.count
             )
             result = (
               HighlightUpdate(
                 replacedRange: update.replacedRange,
                 replacementRange: update.replacementRange,
-                invalidatedRanges: update.invalidatedRanges,
+                invalidatedRanges: documentRange.length > 0
+                  ? [documentRange] : [],
                 snapshot: nextPresentation.snapshot
               ),
               nextPresentation
@@ -556,7 +588,7 @@ struct CodeTextView: UIViewRepresentable {
       }
     }
 
-    /// Applies the stable syntax styles for source already visible in TextKit.
+    /// Applies newly settled syntax styles to source visible in TextKit.
     ///
     /// - Parameters:
     ///   - update: The highlight update produced after the source edit.
@@ -589,7 +621,7 @@ struct CodeTextView: UIViewRepresentable {
     /// Presents the newest source before its highlighting completes.
     ///
     /// Existing attributes move with unaffected text, while inserted source
-    /// receives the base style until its syntax color becomes stable.
+    /// receives the base style until its syntax settles.
     ///
     /// - Parameters:
     ///   - rendition: The complete source and appearance to present.

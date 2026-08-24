@@ -10,11 +10,20 @@ public enum CodeSyntaxHighlighting: Hashable, Sendable {
   /// An unavailable language falls back to unstyled source.
   case automatic
 
-  /// Highlights incoming source while keeping provisional colors stable.
+  /// Highlights the settled part of streamed source while the uncertain
+  /// tail stays neutral.
   ///
-  /// While streaming, text can gain its first syntax color, but an established
-  /// syntax color remains stable. Changing `whileStreaming` to `false`
-  /// reconciles the complete source with an exact parser snapshot.
+  /// While streaming, every revision is parsed incrementally and Rork
+  /// Highlighter reports how much of it no longer depends on unseen input.
+  /// Settled source shows its exact syntax colors immediately. The trailing
+  /// region that Tree-sitter still classifies through error recovery starts
+  /// in the theme's base color, and each classification there appears once
+  /// it has outlived a fixed amount of appended source, so multiline
+  /// constructs color while they stream without exposing recovery guesses,
+  /// regardless of chunk size. Source that was revealed and then drawn
+  /// back into recovery keeps its last colors instead of flickering.
+  /// Changing `whileStreaming` to `false` reconciles the complete source
+  /// with a fresh parse, which matches one-shot highlighting exactly.
   ///
   /// - Parameter whileStreaming: Whether the source is still receiving updates.
   case incremental(whileStreaming: Bool)
@@ -43,6 +52,16 @@ public enum CodeSyntaxHighlighting: Hashable, Sendable {
   /// Returns whether provisional syntax colors should remain stable.
   var preservesProvisionalColors: Bool {
     self == .incremental(whileStreaming: true)
+  }
+
+  /// Returns whether the source is still receiving streamed updates.
+  var isActivelyStreaming: Bool {
+    switch self {
+    case .incremental(let whileStreaming), .deferred(let whileStreaming):
+      whileStreaming
+    case .automatic, .disabled:
+      false
+    }
   }
 
   /// Returns whether inserted source should use the syntax theme baseline.

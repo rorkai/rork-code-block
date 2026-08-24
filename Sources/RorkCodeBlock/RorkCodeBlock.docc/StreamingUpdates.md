@@ -43,8 +43,9 @@ including an async sequence, an observation model, or a reducer.
 
 Automatic highlighting applies exact parser results and suits complete source
 or ordinary edits. Streaming apps can supply their existing state through
-``CodeSyntaxHighlighting/incremental(whileStreaming:)``. This keeps provisional
-colors stable during generation and reconciles the completed source exactly.
+``CodeSyntaxHighlighting/incremental(whileStreaming:)``. This colors settled
+syntax exactly while it arrives, keeps speculative parser recovery invisible,
+and reconciles the completed source exactly.
 
 Apps that prefer stable plain text during generation can use deferred mode:
 
@@ -62,16 +63,36 @@ does not need to infer when generation has ended.
 
 The block presents every source revision immediately, then submits highlighting
 work in order to its actor-isolated session. Incremental streaming mode lets
-plain text gain its first syntax color as an incomplete construct becomes
-recognizable. Once text has a syntax color, append-only updates keep it stable
-instead of exposing Tree-sitter's temporary recovery classifications. The
-completed source then receives one exact parser snapshot.
+Tree-sitter parse every revision, and Rork Highlighter reports how much of the
+leading source parses without end-of-input recovery. Syntax before that
+boundary shows its exact colors. The trailing region, which Tree-sitter still
+classifies through error recovery, stays in the theme's base color because its
+meaning can change with the next chunk.
+
+Revealed styles persist. When a later chunk drags revealed source back into
+recovery, for example while a generic argument or string literal is half
+arrived, that region keeps its last settled colors instead of following the
+parser's temporary guesses, and it resynchronizes as soon as the syntax
+settles again.
+
+Recovery can also hold a construct open for a long time, such as a call whose
+trailing closure streams line by line, and its region would otherwise stay
+neutral until the closing braces arrive. Inside that region, a classification
+appears once it has outlived a fixed amount of appended source, because
+recovery guesses die within a short stretch of further input while
+trustworthy classifications hold indefinitely. Survival is measured against
+the source itself rather than parser samples, so the behavior does not
+change with chunk size or update coalescing. Streamed colors therefore
+appear while the construct streams and still match the finished snippet
+instead of flickering through recovery states.
 
 The first highlighted revision opens a Tree-sitter session. Later revisions
 calculate one UTF-16 replacement and incrementally edit the syntax tree. TextKit
-applies only newly resolved syntax ranges. A parser result superseded by newer
-source still advances both parser and presentation state without replacing the
-newer text already on screen.
+applies only the ranges whose presented styles changed. A parser result
+superseded by newer source still advances both parser and presentation state
+without replacing the newer text already on screen. When streaming ends, the
+block parses the completed source freshly, because Tree-sitter's recovery is
+path dependent and reconciliation must match one-shot highlighting exactly.
 
 A replacement elsewhere in the source continues to use the complete
 invalidation ranges reported by Rork Highlighter. A language or theme change

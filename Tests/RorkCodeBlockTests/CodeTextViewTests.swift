@@ -133,6 +133,396 @@ struct CodeTextViewTests {
     coordinator.cancel()
   }
 
+  /// Verifies that settled tokens gain color before their line completes.
+  ///
+  /// The keyword is followed by a separator and settles immediately, while
+  /// the trailing number can still grow with the next chunk and must stay
+  /// neutral.
+  @Test("Reveals settled tokens while the tail stays neutral")
+  func revealsSettledTokensWhileTailStaysNeutral() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let source = "let value = 42"
+    let baseColor = nativeColor(
+      HighlightTheme.rorkDark.baseStyle.foregroundColor
+    )
+
+    coordinator.enqueue(
+      rendition(
+        source: source,
+        syntaxHighlighting: .incremental(whileStreaming: true)
+      ),
+      in: textView
+    )
+
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    let colors = allForegroundColors(in: textView.textStorage)
+    #expect(colors[0] != baseColor)
+    #expect(colors[12] == baseColor)
+    #expect(colors[13] == baseColor)
+    coordinator.cancel()
+  }
+
+  /// Verifies that an unterminated string stays neutral until it closes.
+  ///
+  /// Tree-sitter recovers the open literal by inventing a closing quote, so
+  /// its content is speculative. The content must stay neutral while the
+  /// string is open and adopt its exact color atomically once the closing
+  /// quote and a separator arrive.
+  @Test("Withholds an unterminated string until it settles")
+  func withholdsUnterminatedStringUntilItSettles() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let openSource = "let value = 42\nlet greeting = \"Hel"
+    let baseColor = nativeColor(
+      HighlightTheme.rorkDark.baseStyle.foregroundColor
+    )
+    let contentOffsets = 31..<34
+
+    coordinator.enqueue(
+      rendition(
+        source: openSource,
+        syntaxHighlighting: .incremental(whileStreaming: true)
+      ),
+      in: textView
+    )
+
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    let openColors = allForegroundColors(in: textView.textStorage)
+    #expect(openColors[15] != baseColor)
+    #expect(
+      contentOffsets.allSatisfy { openColors[$0] == baseColor }
+    )
+
+    coordinator.enqueue(
+      rendition(
+        source: openSource + "lo!\"\n",
+        syntaxHighlighting: .incremental(whileStreaming: true)
+      ),
+      in: textView
+    )
+
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    let settledColors = allForegroundColors(in: textView.textStorage)
+    #expect(
+      contentOffsets.allSatisfy { settledColors[$0] != baseColor }
+    )
+    coordinator.cancel()
+  }
+
+  /// Verifies that a call colors while its trailing closure still streams.
+  ///
+  /// Tree-sitter holds a call with an open trailing closure inside
+  /// end-of-input recovery until the closing braces arrive, so boundary
+  /// stability alone would keep the call neutral for the closure's whole
+  /// lifetime. Confirmed classifications reveal it while the closure body
+  /// is still arriving.
+  @Test("Reveals a call name while its trailing closure streams")
+  func revealsCallNameWhileTrailingClosureStreams() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let baseColor = nativeColor(
+      HighlightTheme.rorkDark.baseStyle.foregroundColor
+    )
+    let callRange = try #require(swiftSource.range(of: "CodeBlock(source"))
+    let callOffset = swiftSource.utf16.distance(
+      from: swiftSource.utf16.startIndex,
+      to: callRange.lowerBound.samePosition(in: swiftSource.utf16)!
+    )
+
+    // Stop before the closing braces of the closure, the body, and the
+    // struct arrive, so the call is still inside parser recovery.
+    let closureBody = try #require(swiftSource.range(of: "source += chunk"))
+    let streamedEnd = swiftSource.index(
+      closureBody.upperBound,
+      offsetBy: 1
+    )
+    let streamedPrefix = String(swiftSource[..<streamedEnd])
+
+    for revision in streamedRevisions(of: streamedPrefix, chunkSize: 7) {
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          syntaxHighlighting: .incremental(whileStreaming: true)
+        ),
+        in: textView
+      )
+      try await waitUntil { !coordinator.isProcessingHighlights }
+    }
+
+    let colors = allForegroundColors(in: textView.textStorage)
+    #expect(colors[callOffset] != baseColor)
+    coordinator.cancel()
+  }
+
+  /// Verifies that replaying over a rendered snippet colors from the start.
+  ///
+  /// The example app renders the complete fixture at launch and replays it
+  /// from an empty revision, which replaces the session content instead of
+  /// appending. The earliest tokens must still gain their colors while the
+  /// stream runs rather than at reconciliation.
+  @Test("Reveals leading tokens after replaying a rendered snippet")
+  func revealsLeadingTokensAfterReplayingRenderedSnippet() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let baseColor = nativeColor(
+      HighlightTheme.rorkDark.baseStyle.foregroundColor
+    )
+
+    coordinator.enqueue(
+      rendition(
+        source: swiftSource,
+        syntaxHighlighting: .incremental(whileStreaming: false)
+      ),
+      in: textView
+    )
+    try await waitUntil { !coordinator.isProcessingHighlights }
+
+    coordinator.enqueue(
+      rendition(
+        source: "",
+        syntaxHighlighting: .incremental(whileStreaming: true)
+      ),
+      in: textView
+    )
+    for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          syntaxHighlighting: .incremental(whileStreaming: true)
+        ),
+        in: textView
+      )
+      try await Task.sleep(for: TestMetrics.streamingInterval)
+    }
+
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    let colors = allForegroundColors(in: textView.textStorage)
+    #expect(colors[0] != baseColor)
+    #expect(colors[5] != baseColor)
+    coordinator.cancel()
+  }
+
+  /// Verifies that streaming never shows a color the final render lacks.
+  ///
+  /// Every revision is compared with a one-shot render of the completed
+  /// source. A revealed color that the final rendering will not reproduce
+  /// means the presentation exposed a speculative recovery classification,
+  /// which is exactly what freezing first colors and committing whole lines
+  /// did.
+  @Test(
+    "Shows only colors that the final rendering reproduces",
+    arguments: [CodeLanguage.swift, CodeLanguage.typescript]
+  )
+  func showsOnlyColorsTheFinalRenderingReproduces(
+    language: CodeLanguage
+  ) async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let source = fixtureSource(for: language)
+    let baseColor = nativeColor(
+      HighlightTheme.rorkDark.baseStyle.foregroundColor
+    )
+    let finalColors = try referenceColors(
+      source: source,
+      language: language
+    )
+
+    for revision in streamedRevisions(of: source, chunkSize: 7) {
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          language: language,
+          syntaxHighlighting: .incremental(whileStreaming: true)
+        ),
+        in: textView
+      )
+      try await waitUntil { !coordinator.isProcessingHighlights }
+
+      let colors = allForegroundColors(in: textView.textStorage)
+      for (offset, color) in colors.enumerated()
+      where color != baseColor {
+        #expect(
+          color == finalColors[offset],
+          "Speculative color at \(offset) in length \(revision.utf16.count)"
+        )
+      }
+    }
+
+    coordinator.cancel()
+  }
+
+  /// Verifies that fine-grained chunks never show colors the final lacks.
+  ///
+  /// Recovery guesses can survive several parses when each chunk is tiny,
+  /// so confirmation must measure survival against appended source rather
+  /// than parser observations. Counting observations leaked recovery
+  /// guesses at this chunk size.
+  @Test("Shows only final colors with character-level chunks")
+  func showsOnlyFinalColorsWithCharacterLevelChunks() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let baseColor = nativeColor(
+      HighlightTheme.rorkDark.baseStyle.foregroundColor
+    )
+    let finalColors = try referenceColors(
+      source: swiftSource,
+      language: .swift
+    )
+
+    for revision in streamedRevisions(of: swiftSource, chunkSize: 3) {
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          syntaxHighlighting: .incremental(whileStreaming: true)
+        ),
+        in: textView
+      )
+      try await waitUntil { !coordinator.isProcessingHighlights }
+
+      let colors = allForegroundColors(in: textView.textStorage)
+      for (offset, color) in colors.enumerated()
+      where color != baseColor {
+        #expect(
+          color == finalColors[offset],
+          "Speculative color at \(offset) in length \(revision.utf16.count)"
+        )
+      }
+    }
+
+    coordinator.cancel()
+  }
+
+  /// Verifies that finished streams match one-shot rendering exactly.
+  @Test(
+    "Reconciles finished streams to one-shot rendering",
+    arguments: [
+      CodeLanguage.swift, CodeLanguage.typescript, CodeLanguage.markdown,
+    ]
+  )
+  func reconcilesFinishedStreamsToOneShotRendering(
+    language: CodeLanguage
+  ) async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let source = fixtureSource(for: language)
+
+    for revision in streamedRevisions(of: source, chunkSize: 7) {
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          language: language,
+          syntaxHighlighting: .incremental(whileStreaming: true)
+        ),
+        in: textView
+      )
+      try await Task.sleep(for: TestMetrics.streamingInterval)
+    }
+
+    coordinator.enqueue(
+      rendition(
+        source: source,
+        language: language,
+        syntaxHighlighting: .incremental(whileStreaming: false)
+      ),
+      in: textView
+    )
+
+    #expect(textView.textStorage.string == source)
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    try await expectExactHighlighting(
+      in: textView.textStorage,
+      source: source,
+      language: language
+    )
+    coordinator.cancel()
+  }
+
+  /// Verifies that surrogate pairs and multibyte source stream correctly.
+  @Test("Streams non-ASCII source and reconciles exactly")
+  func streamsNonASCIISourceAndReconcilesExactly() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let source = """
+      let emoji = "🚀🚀🚀"
+      let 名前 = "日本語のテキスト"
+      let mixed = "café ☕️ \\(emoji)"
+      """
+
+    for revision in streamedRevisions(of: source, chunkSize: 3) {
+      coordinator.enqueue(
+        rendition(
+          source: revision,
+          syntaxHighlighting: .incremental(whileStreaming: true)
+        ),
+        in: textView
+      )
+      #expect(textView.textStorage.string == revision)
+      try await Task.sleep(for: TestMetrics.streamingInterval)
+    }
+
+    coordinator.enqueue(
+      rendition(
+        source: source,
+        syntaxHighlighting: .incremental(whileStreaming: false)
+      ),
+      in: textView
+    )
+
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    try await expectExactHighlighting(
+      in: textView.textStorage,
+      source: source,
+      language: .swift
+    )
+    coordinator.cancel()
+  }
+
+  /// Verifies that a non-append replacement mid-stream stays correct.
+  @Test("Recovers from a mid-stream replacement")
+  func recoversFromMidStreamReplacement() async throws {
+    let textView = SelectableCodeTextView()
+    let coordinator = CodeTextView.Coordinator()
+    let initialSource = "let value = 42\nlet next = 1"
+    let replacedSource = "let renamed = 42\nlet next = 1"
+    let finalSource = replacedSource + "\nlet final = 2\n"
+
+    coordinator.enqueue(
+      rendition(
+        source: initialSource,
+        syntaxHighlighting: .incremental(whileStreaming: true)
+      ),
+      in: textView
+    )
+    try await waitUntil { !coordinator.isProcessingHighlights }
+
+    coordinator.enqueue(
+      rendition(
+        source: replacedSource,
+        syntaxHighlighting: .incremental(whileStreaming: true)
+      ),
+      in: textView
+    )
+    #expect(textView.textStorage.string == replacedSource)
+    try await waitUntil { !coordinator.isProcessingHighlights }
+
+    coordinator.enqueue(
+      rendition(
+        source: finalSource,
+        syntaxHighlighting: .incremental(whileStreaming: false)
+      ),
+      in: textView
+    )
+
+    try await waitUntil { !coordinator.isProcessingHighlights }
+    try await expectExactHighlighting(
+      in: textView.textStorage,
+      source: finalSource,
+      language: .swift
+    )
+    coordinator.cancel()
+  }
+
   /// Verifies that established syntax colors do not change during a stream.
   @Test("Keeps streamed syntax colors stable")
   func keepsStreamedSyntaxColorsStable() async throws {
@@ -231,40 +621,6 @@ struct CodeTextViewTests {
     expectEstablishedColors(establishedColors, in: textView.textStorage)
     #expect(!establishedColors.isEmpty)
     #expect(textView.textStorage.string == swiftSource)
-    coordinator.cancel()
-  }
-
-  /// Verifies that ending a stream replaces provisional colors with exact ones.
-  @Test("Reconciles completed streaming colors exactly")
-  func reconcilesCompletedStreamingColorsExactly() async throws {
-    let textView = SelectableCodeTextView()
-    let coordinator = CodeTextView.Coordinator()
-
-    for revision in streamedRevisions(of: swiftSource, chunkSize: 7) {
-      coordinator.enqueue(
-        rendition(
-          source: revision,
-          syntaxHighlighting: .incremental(whileStreaming: true)
-        ),
-        in: textView
-      )
-      try await Task.sleep(for: TestMetrics.streamingInterval)
-    }
-
-    coordinator.enqueue(
-      rendition(
-        source: swiftSource,
-        syntaxHighlighting: .incremental(whileStreaming: false)
-      ),
-      in: textView
-    )
-
-    #expect(textView.textStorage.string == swiftSource)
-    try await waitUntil { !coordinator.isProcessingHighlights }
-    try await expectExactHighlighting(
-      in: textView.textStorage,
-      source: swiftSource
-    )
     coordinator.cancel()
   }
 
@@ -517,14 +873,34 @@ struct CodeTextViewTests {
   /// - Parameters:
   ///   - textStorage: The storage containing the completed streaming result.
   ///   - source: The complete source used for the reference snapshot.
+  ///   - language: The language used for the reference snapshot.
   /// - Throws: ``HighlighterError`` or ``TextKitRenderingError`` when the
   ///   reference source cannot be highlighted or rendered.
   private func expectExactHighlighting(
     in textStorage: NSTextStorage,
-    source: String
+    source: String,
+    language: CodeLanguage
   ) async throws {
+    #expect(
+      allForegroundColors(in: textStorage)
+        == (try referenceColors(source: source, language: language))
+    )
+  }
+
+  /// Renders a one-shot reference and returns its per-offset colors.
+  ///
+  /// - Parameters:
+  ///   - source: The complete source used for the reference snapshot.
+  ///   - language: The language used for the reference snapshot.
+  /// - Returns: The reference foreground color at every UTF-16 offset.
+  /// - Throws: ``HighlighterError`` or ``TextKitRenderingError`` when the
+  ///   reference source cannot be highlighted or rendered.
+  private func referenceColors(
+    source: String,
+    language: CodeLanguage
+  ) throws -> [UIColor?] {
     let highlighter = try Highlighter()
-    let snapshot = try highlighter.highlight(source, as: .swift)
+    let snapshot = try highlighter.highlight(source, as: language)
     let referenceStorage = NSTextStorage(string: source)
     let renderer = TextKitHighlightRenderer(
       theme: .rorkDark,
@@ -532,10 +908,22 @@ struct CodeTextViewTests {
     )
 
     try renderer.render(snapshot, in: referenceStorage)
-    #expect(
-      allForegroundColors(in: textStorage)
-        == allForegroundColors(in: referenceStorage)
-    )
+    return allForegroundColors(in: referenceStorage)
+  }
+
+  /// Returns the example fixture streamed for one language.
+  ///
+  /// - Parameter language: The fixture language.
+  /// - Returns: The complete fixture source.
+  private func fixtureSource(for language: CodeLanguage) -> String {
+    switch language {
+    case .typescript:
+      typescriptSource
+    case .markdown:
+      markdownSource
+    default:
+      swiftSource
+    }
   }
 
   /// Returns cumulative source revisions produced by fixed-size chunks.
@@ -586,21 +974,56 @@ struct CodeTextViewTests {
     """#
   }
 
+  /// Holds the TypeScript fixture emitted by the example app.
+  private var typescriptSource: String {
+    #"""
+    type CodeCardProps = {
+      source: string
+      language: "tsx" | "typescript"
+    }
+
+    export function CodeCard({ source, language }: CodeCardProps) {
+      return (
+        <article aria-label={`${language} source`}>
+          <pre><code>{source}</code></pre>
+        </article>
+      )
+    }
+    """#
+  }
+
+  /// Holds the Markdown fixture emitted by the example app.
+  private var markdownSource: String {
+    #"""
+    # Streaming code
+
+    Update one ordinary SwiftUI value as chunks arrive. Rork Code Block
+    reuses its Tree-sitter session and redraws only affected ranges.
+
+    ```swift
+    CodeBlock(source, language: .swift)
+        .codeBlockStyle(.terminal)
+    ```
+    """#
+  }
+
   /// Creates the stable appearance shared by text view tests.
   ///
   /// - Parameters:
   ///   - source: The complete source for the test revision.
+  ///   - language: The language used for syntax highlighting.
   ///   - syntaxHighlighting: Whether the revision should receive syntax colors.
   ///   - lineWrapping: Whether long lines should wrap inside the viewport.
-  /// - Returns: A dark Swift rendition suitable for TextKit rendering.
+  /// - Returns: A dark rendition suitable for TextKit rendering.
   private func rendition(
     source: String,
+    language: CodeLanguage = .swift,
     syntaxHighlighting: CodeSyntaxHighlighting = .automatic,
     lineWrapping: CodeLineWrapping = .disabled
   ) -> CodeRendition {
     CodeRendition(
       source: source,
-      language: .swift,
+      language: language,
       fontSize: 15,
       lineSpacing: 2,
       lineWrapping: lineWrapping,

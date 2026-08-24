@@ -42,7 +42,7 @@ let package = Package(
   dependencies: [
     .package(
       url: "https://github.com/rorkai/rork-highlighter.git",
-      .upToNextMinor(from: "0.3.0")
+      .upToNextMinor(from: "0.4.0")
     )
   ],
   targets: [
