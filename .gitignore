@@ -1,0 +1,10 @@
+.build/
+.swiftpm/
+.DS_Store
+DerivedData/
+Package.resolved
+xcuserdata/
+*.xcuserstate
+Examples/RorkCodeBlockExample/*.xcodeproj/
+Examples/RorkCodeBlockExample/*.xcworkspace/
+Examples/RorkCodeBlockExample/Derived/
